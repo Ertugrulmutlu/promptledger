@@ -174,7 +174,6 @@ Use this checklist to review prompt changes like code.
 4) Validate safety
 - Look for accidental secrets or credentials.
 - Ensure sensitive data is not embedded in the prompt text.
-![enter image description here](https://github.com/Ertugrulmutlu/promptledger/blob/main/assests/PromptLedger.png)
 5) Promote with labels
 - `promptledger label set --id <prompt_id> --version <new> --name <label>`
 - Update `prod`/`staging` labels only after review.

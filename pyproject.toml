@@ -28,6 +28,13 @@ test = ["pytest"]
 [project.scripts]
 promptledger = "promptledger.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/Ertugrulmutlu/promptledger"
+Repository = "https://github.com/Ertugrulmutlu/promptledger"
+Issues = "https://github.com/Ertugrulmutlu/promptledger/issues"
+CI = "https://github.com/Ertugrulmutlu/promptledger/actions"
+Documentation = "https://github.com/Ertugrulmutlu/promptledger#readme"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

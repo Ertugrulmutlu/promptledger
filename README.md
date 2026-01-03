@@ -2,9 +2,7 @@
 ![](https://github.com/Ertugrulmutlu/promptledger/blob/main/assests/PromptLedger.png)
 <p align="center">
   <img alt="CI" src="https://github.com/Ertugrulmutlu/promptledger/actions/workflows/ci.yml/badge.svg">
-  <a href="https://pypi.org/project/promptledger/">
-    <img alt="PyPI" src="https://img.shields.io/pypi/v/promptledger">
-  </a>
+  <img alt="PyPI" src="https://img.shields.io/pypi/v/promptledger">
   <img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/promptledger">
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg">
 </p>

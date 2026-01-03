@@ -1,0 +1,29 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+Scripts/
+Lib/
+Include/
+pyvenv.cfg
+
+# PromptLedger local storage (never commit)
+.promptledger/
+
+# OS
+.DS_Store
+Thumbs.db

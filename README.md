@@ -16,9 +16,9 @@ Python API, and a read-only Streamlit viewer.
 ## What it is
 
 - A local prompt change ledger stored in SQLite
-- Git-style history with unified diffs via `difflib`
+- Git-style history with multiple diff modes via `difflib`
 - Metadata support: reason, author, tags, env, metrics
-- Label support for release-style pointers to versions
+- Label support for release-style pointers plus label history audit trail
 - CLI and Python API for add/get/list/diff/export workflows
 - Read-only Streamlit UI with timeline, filtering, diff, and side-by-side comparison
 - Newline normalization to avoid CRLF/LF noise
@@ -60,12 +60,18 @@ promptledger list
 promptledger list --id onboarding
 promptledger show --id onboarding --version 2
 promptledger diff --id onboarding --from 1 --to 2
+promptledger diff --id onboarding --from prod --to staging
+promptledger diff --id onboarding --from 1 --to 2 --mode context
+promptledger diff --id onboarding --from 1 --to 2 --mode ndiff
+promptledger diff --id onboarding --from 1 --to 2 --mode metadata
 promptledger export --format jsonl --out prompt_history.jsonl
 promptledger export --format csv --out prompt_history.csv
 promptledger search --contains "friendly" --id onboarding --tag draft --env dev
 promptledger label set --id onboarding --version 2 --name prod
 promptledger label get --id onboarding --name prod
 promptledger label list --id onboarding
+promptledger label history --id onboarding
+promptledger status
 promptledger ui
 ```
 Notes:
@@ -98,6 +104,7 @@ ledger.add(
 latest = ledger.get("summary")
 print(latest.version, latest.content)
 print(ledger.diff("summary", 1, 2))
+print(ledger.diff_labels("summary", "prod", "staging"))
 ```
 
 ## Example Workflow
@@ -121,13 +128,15 @@ Each prompt version can store:
 
 ## Labels
 
-Labels are human-readable pointers to specific prompt versions. Use them to track active releases (e.g. `prod`, `staging`, `latest`) without creating new versions.
+Labels are human-readable pointers to specific prompt versions. Use them to track active releases (e.g. `prod`, `staging`, `latest`) without creating new versions. Every label change is recorded in an append-only label history log.
 
 ```bash
 promptledger label set --id onboarding --version 7 --name prod
 promptledger label set --id onboarding --version 9 --name staging
 promptledger label get --id onboarding --name prod
 promptledger label list --id onboarding
+promptledger label history --id onboarding --name prod
+promptledger status --id onboarding
 ```
 
 ## Newline Normalization

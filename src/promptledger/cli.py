@@ -78,8 +78,16 @@ def main(argv: list[str] | None = None) -> int:
 
     diff_parser = subparsers.add_parser("diff", help="Diff two versions.")
     diff_parser.add_argument("--id", required=True, dest="prompt_id")
-    diff_parser.add_argument("--from", dest="from_version", type=int, required=True)
-    diff_parser.add_argument("--to", dest="to_version", type=int, required=True)
+    diff_parser.add_argument("--from", dest="from_version", required=True)
+    diff_parser.add_argument("--to", dest="to_version", required=True)
+    diff_parser.add_argument(
+        "--mode",
+        choices=["unified", "context", "ndiff", "metadata"],
+        default="unified",
+    )
+
+    status_parser = subparsers.add_parser("status", help="Show prompt status.")
+    status_parser.add_argument("--id", dest="prompt_id")
 
     export_parser = subparsers.add_parser("export", help="Export prompt history.")
     export_parser.add_argument("--format", choices=["jsonl", "csv"], required=True)
@@ -105,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
 
     label_list = label_sub.add_parser("list", help="List labels.")
     label_list.add_argument("--id", dest="prompt_id")
+
+    label_history = label_sub.add_parser("history", help="Show label history.")
+    label_history.add_argument("--id", dest="prompt_id")
+    label_history.add_argument("--name", dest="label")
+    label_history.add_argument("--limit", type=int, default=200)
 
     subparsers.add_parser("ui", help="Launch the Streamlit UI.")
 
@@ -175,12 +188,36 @@ def main(argv: list[str] | None = None) -> int:
             print("\n" + record.content)
         elif args.command == "diff":
             try:
-                diff_text = ledger.diff(args.prompt_id, args.from_version, args.to_version)
+                diff_text = ledger.diff_any(
+                    args.prompt_id,
+                    args.from_version,
+                    args.to_version,
+                    mode=args.mode,
+                )
             except ValueError as exc:
                 return _error(str(exc), 2)
             except Exception as exc:
                 return _error(f"Failed to diff prompts: {exc}", 1)
             print(diff_text)
+        elif args.command == "status":
+            try:
+                status = ledger.status(args.prompt_id)
+            except Exception as exc:
+                return _error(f"Failed to get status: {exc}", 1)
+            if not status:
+                print("0 results")
+            else:
+                for prompt_id, info in status.items():
+                    latest_created = info.get("latest_created_at") or ""
+                    latest_created_fmt = _format_timestamp(latest_created) if latest_created else ""
+                    labels = info.get("labels", {})
+                    label_parts = [
+                        f"{label}->{labels[label]}" for label in sorted(labels.keys())
+                    ]
+                    label_text = ",".join(label_parts)
+                    print(
+                        f"{prompt_id}\t{info['latest_version']}\t{latest_created_fmt}\t{label_text}"
+                    )
         elif args.command == "export":
             path = ledger.export(args.format, args.out)
             print(f"Exported to {path}")
@@ -226,6 +263,24 @@ def main(argv: list[str] | None = None) -> int:
                         updated = _format_timestamp(item["updated_at"])
                         print(
                             f"{item['prompt_id']}\t{item['label']}\t{item['version']}\t{updated}"
+                        )
+            elif args.label_command == "history":
+                try:
+                    events = ledger.list_label_events(
+                        prompt_id=args.prompt_id,
+                        label=args.label,
+                        limit=args.limit,
+                    )
+                except Exception as exc:
+                    return _error(f"Failed to list label history: {exc}", 1)
+                if not events:
+                    print("0 results")
+                else:
+                    for item in events:
+                        updated = _format_timestamp(item["updated_at"])
+                        old_version = "" if item["old_version"] is None else str(item["old_version"])
+                        print(
+                            f"{item['prompt_id']}\t{item['label']}\t{old_version}\t{item['new_version']}\t{updated}"
                         )
             else:
                 return _error("Unknown label command.", 2)

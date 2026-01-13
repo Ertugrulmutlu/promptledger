@@ -4,6 +4,16 @@ All notable changes to PromptLedger are documented in this file.
 
 This project follows Keep a Changelog and Semantic Versioning.
 
+## [0.2.0] - 2026-01-13
+
+### Added
+- Label history audit trail backed by `label_events` with schema migration
+- Label history CLI (`promptledger label history`) and UI section
+- Label-based and mixed diff resolution via versions or labels
+- `status` command for a deterministic overview of prompts and labels
+- Diff modes: unified, context, ndiff, and metadata-only
+- Demo script for seeding local data (`demo.py`)
+
 ## [0.1.0] - 2026-01-03
 
 ### Added

@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def _git_root_via_cli(start: Path) -> Path | None:
@@ -138,6 +138,26 @@ def _create_labels_table(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_labels_prompt ON labels(prompt_id)")
 
 
+def _create_label_events_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS label_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            old_version INTEGER,
+            new_version INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_label_events_prompt ON label_events(prompt_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_label_events_prompt_label ON label_events(prompt_id, label)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_label_events_updated ON label_events(updated_at)")
+
+
 def _migrate_0_to_1(conn: sqlite3.Connection) -> None:
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(prompt_versions)")}
     if "env" not in existing_cols:
@@ -148,12 +168,16 @@ def _migrate_0_to_1(conn: sqlite3.Connection) -> None:
 def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
     _create_labels_table(conn)
 
+def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
+    _create_label_events_table(conn)
+
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
     version = _get_schema_version(conn)
     if not _table_exists(conn, "prompt_versions"):
         _create_schema_v1(conn)
         _create_labels_table(conn)
+        _create_label_events_table(conn)
         _set_schema_version(conn, CURRENT_SCHEMA_VERSION)
         return
 
@@ -165,6 +189,11 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     if version < 2:
         _migrate_1_to_2(conn)
         _set_schema_version(conn, 2)
+        version = 2
+
+    if version < 3:
+        _migrate_2_to_3(conn)
+        _set_schema_version(conn, 3)
 
 
 def init_db(db_path: Path) -> None:

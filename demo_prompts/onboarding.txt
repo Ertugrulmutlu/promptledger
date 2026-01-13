@@ -1,0 +1,2 @@
+Write a friendly onboarding email.
+Include a short checklist.

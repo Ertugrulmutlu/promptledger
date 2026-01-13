@@ -168,12 +168,78 @@ class PromptLedger:
             records = [r for r in records if r.tags and tag_set.intersection(r.tags)]
         return records
 
+    def status(self, prompt_id: str | None = None) -> dict[str, dict[str, Any]]:
+        prompt_filter = "WHERE prompt_id = ?" if prompt_id else ""
+        params: list[Any] = [prompt_id] if prompt_id else []
+        latest_rows: dict[str, dict[str, Any]] = {}
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT prompt_id, MAX(version) AS version
+                FROM prompt_versions
+                {prompt_filter}
+                GROUP BY prompt_id
+                ORDER BY prompt_id ASC
+                """,
+                params,
+            ).fetchall()
+            if not rows:
+                return {}
+
+            for row in rows:
+                latest_rows[row["prompt_id"]] = {"latest_version": int(row["version"])}
+
+            for prompt in latest_rows.keys():
+                latest_version = latest_rows[prompt]["latest_version"]
+                created_row = conn.execute(
+                    """
+                    SELECT created_at
+                    FROM prompt_versions
+                    WHERE prompt_id = ? AND version = ?
+                    LIMIT 1
+                    """,
+                    (prompt, latest_version),
+                ).fetchone()
+                latest_rows[prompt]["latest_created_at"] = (
+                    created_row["created_at"] if created_row else None
+                )
+
+        labels = self.list_labels(prompt_id)
+        label_map: dict[str, dict[str, int]] = {}
+        for item in labels:
+            label_map.setdefault(item["prompt_id"], {})[item["label"]] = item["version"]
+
+        status: dict[str, dict[str, Any]] = {}
+        for prompt in sorted(latest_rows.keys()):
+            latest_version = latest_rows[prompt]["latest_version"]
+            prompt_labels = label_map.get(prompt, {})
+            status[prompt] = {
+                "latest_version": latest_version,
+                "latest_created_at": latest_rows[prompt]["latest_created_at"],
+                "labels": prompt_labels,
+                "labels_at_latest": {
+                    label: version == latest_version for label, version in prompt_labels.items()
+                },
+            }
+        return status
+
     def set_label(self, prompt_id: str, version: int, label: str) -> None:
         record = self.get(prompt_id, version)
         if record is None:
             raise ValueError("Prompt version not found.")
         updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with self._connect() as conn:
+            old_row = conn.execute(
+                """
+                SELECT version
+                FROM labels
+                WHERE prompt_id = ? AND label = ?
+                LIMIT 1
+                """,
+                (prompt_id, label),
+            ).fetchone()
+            old_version = int(old_row["version"]) if old_row else None
             conn.execute(
                 """
                 INSERT INTO labels (prompt_id, label, version, updated_at)
@@ -183,6 +249,13 @@ class PromptLedger:
                     updated_at=excluded.updated_at
                 """,
                 (prompt_id, label, version, updated_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO label_events (prompt_id, label, old_version, new_version, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (prompt_id, label, old_version, version, updated_at),
             )
             conn.commit()
 
@@ -224,6 +297,46 @@ class PromptLedger:
                 "prompt_id": row["prompt_id"],
                 "label": row["label"],
                 "version": int(row["version"]),
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def list_label_events(
+        self,
+        prompt_id: str | None = None,
+        label: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if prompt_id:
+            filters.append("prompt_id = ?")
+            params.append(prompt_id)
+        if label:
+            filters.append("label = ?")
+            params.append(label)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, prompt_id, label, old_version, new_version, updated_at
+                FROM label_events
+                {where}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "prompt_id": row["prompt_id"],
+                "label": row["label"],
+                "old_version": int(row["old_version"]) if row["old_version"] is not None else None,
+                "new_version": int(row["new_version"]),
                 "updated_at": row["updated_at"],
             }
             for row in rows
@@ -293,20 +406,72 @@ class PromptLedger:
             return None
         return self._row_to_record(row)
 
-    def diff(self, prompt_id: str, from_version: int, to_version: int) -> str:
+    def diff(
+        self,
+        prompt_id: str,
+        from_version: int,
+        to_version: int,
+        mode: str = "unified",
+        include_metadata: bool = False,
+    ) -> str:
         left = self.get(prompt_id, from_version)
         right = self.get(prompt_id, to_version)
         if left is None or right is None:
             raise ValueError("One or both versions not found.")
+        if mode == "metadata":
+            return self._diff_metadata(prompt_id, left, right)
         left_lines = normalize_newlines(left.content).splitlines(keepends=True)
         right_lines = normalize_newlines(right.content).splitlines(keepends=True)
-        diff_lines = difflib.unified_diff(
+        diff_text = self._diff_lines(
             left_lines,
             right_lines,
             fromfile=f"{prompt_id}@{from_version}",
             tofile=f"{prompt_id}@{to_version}",
+            mode=mode,
         )
-        return "".join(diff_lines)
+        if include_metadata:
+            meta_text = self._diff_metadata(prompt_id, left, right)
+            if meta_text:
+                if diff_text:
+                    diff_text += "\n"
+                diff_text += meta_text
+        return diff_text
+
+    def diff_labels(
+        self,
+        prompt_id: str,
+        from_label: str,
+        to_label: str,
+        mode: str = "unified",
+        include_metadata: bool = False,
+    ) -> str:
+        from_version = self.get_label(prompt_id, from_label)
+        to_version = self.get_label(prompt_id, to_label)
+        return self.diff(
+            prompt_id,
+            from_version,
+            to_version,
+            mode=mode,
+            include_metadata=include_metadata,
+        )
+
+    def diff_any(
+        self,
+        prompt_id: str,
+        from_ref: int | str,
+        to_ref: int | str,
+        mode: str = "unified",
+        include_metadata: bool = False,
+    ) -> str:
+        from_version = self._resolve_ref(prompt_id, from_ref)
+        to_version = self._resolve_ref(prompt_id, to_ref)
+        return self.diff(
+            prompt_id,
+            from_version,
+            to_version,
+            mode=mode,
+            include_metadata=include_metadata,
+        )
 
     def export(self, format: str, out_path: str | Path) -> Path:
         format = format.lower()
@@ -356,4 +521,67 @@ class PromptLedger:
             env=row["env"],
             metrics=metrics,
             created_at=row["created_at"],
+        )
+
+    def _resolve_ref(self, prompt_id: str, ref: int | str) -> int:
+        if isinstance(ref, int):
+            return ref
+        try:
+            return int(ref)
+        except (TypeError, ValueError):
+            return self.get_label(prompt_id, ref)
+
+    def _diff_lines(
+        self,
+        left_lines: list[str],
+        right_lines: list[str],
+        fromfile: str,
+        tofile: str,
+        mode: str,
+    ) -> str:
+        if mode == "unified":
+            diff_lines = difflib.unified_diff(
+                left_lines,
+                right_lines,
+                fromfile=fromfile,
+                tofile=tofile,
+            )
+        elif mode == "context":
+            diff_lines = difflib.context_diff(
+                left_lines,
+                right_lines,
+                fromfile=fromfile,
+                tofile=tofile,
+            )
+        elif mode == "ndiff":
+            diff_lines = difflib.ndiff(left_lines, right_lines)
+        else:
+            raise ValueError("Unsupported diff mode.")
+        return "".join(diff_lines)
+
+    def _diff_metadata(self, prompt_id: str, left: PromptRecord, right: PromptRecord) -> str:
+        left_meta = {
+            "reason": left.reason,
+            "author": left.author,
+            "tags": left.tags,
+            "env": left.env,
+            "metrics": left.metrics,
+        }
+        right_meta = {
+            "reason": right.reason,
+            "author": right.author,
+            "tags": right.tags,
+            "env": right.env,
+            "metrics": right.metrics,
+        }
+        left_text = json.dumps(left_meta, sort_keys=True, indent=2)
+        right_text = json.dumps(right_meta, sort_keys=True, indent=2)
+        left_lines = left_text.splitlines(keepends=True)
+        right_lines = right_text.splitlines(keepends=True)
+        return self._diff_lines(
+            left_lines,
+            right_lines,
+            fromfile=f"{prompt_id}@{left.version}",
+            tofile=f"{prompt_id}@{right.version}",
+            mode="unified",
         )

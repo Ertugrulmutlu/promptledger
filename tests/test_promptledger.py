@@ -105,6 +105,185 @@ def test_diff_correctness(tmp_path):
     assert "+line3" in diff_text
 
 
+def test_diff_labels_and_any(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    ledger.add("delta", "line1\nline2")
+    ledger.add("delta", "line1\nline3")
+    ledger.set_label("delta", 1, "prod")
+    ledger.set_label("delta", 2, "staging")
+
+    diff_labels = ledger.diff_labels("delta", "prod", "staging")
+    assert "-line2" in diff_labels
+    assert "+line3" in diff_labels
+
+    diff_any = ledger.diff_any("delta", "prod", 2)
+    assert "-line2" in diff_any
+    assert "+line3" in diff_any
+
+
+def test_diff_modes(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    ledger.add("modes", "line1\nline2", reason="first", tags=["a"], env="dev")
+    ledger.add("modes", "line1\nline3", reason="second", tags=["b"], env="prod")
+
+    unified = ledger.diff("modes", 1, 2, mode="unified")
+    assert unified
+
+    context_diff = ledger.diff("modes", 1, 2, mode="context")
+    assert "***" in context_diff
+    assert "---" in context_diff
+
+    ndiff_text = ledger.diff("modes", 1, 2, mode="ndiff")
+    assert "- line2" in ndiff_text
+    assert "+ line3" in ndiff_text
+
+    meta_text = ledger.diff("modes", 1, 2, mode="metadata")
+    assert '-  "reason": "first"' in meta_text
+    assert '+  "reason": "second"' in meta_text
+    assert '-  "env": "dev"' in meta_text
+    assert '+  "env": "prod"' in meta_text
+
+
+def test_new_db_has_label_events(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    with sqlite3.connect(ledger.db_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "label_events" in tables
+
+
+def test_label_events_ordering(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    ledger.add("alpha", "one")
+    ledger.add("alpha", "two")
+    ledger.set_label("alpha", 1, "prod")
+    ledger.set_label("alpha", 2, "prod")
+    ledger.set_label("alpha", 1, "prod")
+
+    events = ledger.list_label_events(prompt_id="alpha", label="prod")
+    assert [event["new_version"] for event in events[:3]] == [1, 2, 1]
+    assert events[0]["old_version"] == 2
+
+
+def test_set_label_appends_event(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    ledger.add("beta", "one")
+    ledger.add("beta", "two")
+    ledger.set_label("beta", 1, "prod")
+    ledger.set_label("beta", 2, "prod")
+
+    labels = ledger.list_labels("beta")
+    assert labels[0]["version"] == 2
+
+    events = ledger.list_label_events(prompt_id="beta", label="prod")
+    assert len(events) == 2
+    assert events[0]["old_version"] == 1
+    assert events[0]["new_version"] == 2
+    assert events[1]["old_version"] is None
+    assert events[1]["new_version"] == 1
+
+
+def test_metadata_diff_with_same_content(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    content = "same content"
+    hash_value = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    with db.connect(ledger.db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO prompt_versions (
+                prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "meta",
+                1,
+                content,
+                hash_value,
+                "first",
+                "alice",
+                json.dumps(["a"]),
+                "dev",
+                json.dumps({"score": 1}),
+                "2024-01-01T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO prompt_versions (
+                prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "meta",
+                2,
+                content,
+                hash_value,
+                "second",
+                "alice",
+                json.dumps(["b"]),
+                "prod",
+                json.dumps({"score": 2}),
+                "2024-01-01T00:00:01Z",
+            ),
+        )
+        conn.commit()
+
+    diff_text = ledger.diff("meta", 1, 2, mode="metadata")
+    assert '-  "reason": "first"' in diff_text
+    assert '+  "reason": "second"' in diff_text
+    assert '-  "env": "dev"' in diff_text
+    assert '+  "env": "prod"' in diff_text
+    assert '-    "a"' in diff_text
+    assert '+    "b"' in diff_text
+    assert '-    "score": 1' in diff_text
+    assert '+    "score": 2' in diff_text
+
+
+def test_status_snapshot(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    ledger = PromptLedger()
+    ledger.init()
+
+    ledger.add("alpha", "one")
+    ledger.add("alpha", "two")
+    ledger.add("beta", "single")
+    ledger.set_label("alpha", 2, "prod")
+    ledger.set_label("alpha", 1, "staging")
+
+    status = ledger.status()
+    assert list(status.keys()) == ["alpha", "beta"]
+    assert status["alpha"]["latest_version"] == 2
+    assert status["beta"]["latest_version"] == 1
+    assert status["alpha"]["labels"]["prod"] == 2
+    assert status["alpha"]["labels"]["staging"] == 1
+    assert status["alpha"]["labels_at_latest"]["prod"] is True
+    assert status["alpha"]["labels_at_latest"]["staging"] is False
+
+
 def test_diff_ignores_newline_style(tmp_path):
     ledger = PromptLedger(root=tmp_path)
     ledger.init()
@@ -211,6 +390,12 @@ def test_schema_migration(tmp_path):
         assert "label" in label_cols
         assert "version" in label_cols
         assert "updated_at" in label_cols
+        label_event_cols = {row[1] for row in conn.execute("PRAGMA table_info(label_events)")}
+        assert "prompt_id" in label_event_cols
+        assert "label" in label_event_cols
+        assert "old_version" in label_event_cols
+        assert "new_version" in label_event_cols
+        assert "updated_at" in label_event_cols
         version = conn.execute("SELECT version FROM schema_migrations").fetchone()[0]
         assert version == db.CURRENT_SCHEMA_VERSION
 
@@ -231,6 +416,13 @@ def test_labels_db_behavior(tmp_path):
     labels = ledger.list_labels("alpha")
     assert len(labels) == 1
     assert labels[0]["version"] == 2
+
+    events = ledger.list_label_events(prompt_id="alpha")
+    assert len(events) == 2
+    assert events[0]["new_version"] == 2
+    assert events[0]["old_version"] == 1
+    assert events[1]["new_version"] == 1
+    assert events[1]["old_version"] is None
 
 
 def test_labels_api_errors(tmp_path):

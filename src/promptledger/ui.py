@@ -28,10 +28,12 @@ def _load_data():
     try:
         records = ledger.list()
         labels = ledger.list_labels()
+        label_events = ledger.list_label_events(limit=500)
     except RuntimeError:
         records = []
         labels = []
-    return ledger, records, labels
+        label_events = []
+    return ledger, records, labels, label_events
 
 
 def _labels_for_prompt(labels, prompt_id: str) -> dict[str, int]:
@@ -70,7 +72,7 @@ def app():
     st.title("PromptLedger")
     st.caption("Local-first prompt version history")
 
-    ledger, records, labels = _load_data()
+    ledger, records, labels, label_events = _load_data()
     if not records:
         st.info("No prompt history found. Run `promptledger init` and `promptledger add`.")
         return
@@ -114,6 +116,28 @@ def app():
             }
         )
     st.dataframe(timeline_rows, use_container_width=True)
+
+    st.subheader("Label history")
+    label_prompt_ids = _unique([event["prompt_id"] for event in label_events])
+    if label_events:
+        label_prompt_filter = st.selectbox("Prompt ID (labels)", ["All"] + label_prompt_ids)
+        filtered_events = label_events
+        if label_prompt_filter != "All":
+            filtered_events = [e for e in label_events if e["prompt_id"] == label_prompt_filter]
+        event_rows = []
+        for event in filtered_events:
+            event_rows.append(
+                {
+                    "prompt_id": event["prompt_id"],
+                    "label": event["label"],
+                    "old_version": event["old_version"],
+                    "new_version": event["new_version"],
+                    "updated_at": _format_timestamp(event["updated_at"]),
+                }
+            )
+        st.dataframe(event_rows, use_container_width=True)
+    else:
+        st.info("No label history found.")
 
     st.subheader("Inspect")
     selected_prompt = st.selectbox("Prompt ID", prompt_ids)

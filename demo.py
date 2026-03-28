@@ -12,7 +12,7 @@ from promptledger.core import PromptLedger
 def _seed_data(ledger: PromptLedger) -> None:
     ledger.add(
         "onboarding_email",
-        "Write a friendly onboarding email.\nKeep it concise.",
+        "Write a friendly onboarding email.\nKeep it concise in 3 bullets.",
         reason="initial draft",
         author="demo",
         tags=["draft", "marketing"],
@@ -21,12 +21,12 @@ def _seed_data(ledger: PromptLedger) -> None:
     )
     ledger.add(
         "onboarding_email",
-        "Write a friendly onboarding email.\nKeep it concise and warm.",
-        reason="tone update",
+        "Please provide a professional onboarding email.\nReturn JSON only with subject and body.",
+        reason="release review candidate",
         author="demo",
-        tags=["marketing"],
+        tags=["marketing", "release"],
         env="staging",
-        metrics={"score": 0.82},
+        metrics={"score": 0.82, "latency_ms": 410},
     )
     ledger.set_label("onboarding_email", 1, "prod")
     ledger.set_label("onboarding_email", 2, "staging")
@@ -43,8 +43,8 @@ def _seed_data(ledger: PromptLedger) -> None:
     )
     ledger.add(
         "support_reply",
-        "Reply with empathy and a clear next step. Ask one clarifying question.",
-        reason="add clarification step",
+        "Reply with empathy and a clear next step. You must ask one clarifying question. Refuse unsafe requests.",
+        reason="constraint and safety update",
         author="demo",
         tags=["support", "tone"],
         env="prod",
@@ -79,6 +79,11 @@ def main() -> int:
     print("Try: promptledger status")
     print("Try: promptledger label history")
     print("Try: promptledger diff --id onboarding_email --from prod --to staging")
+    print("Try: promptledger diff --id onboarding_email --from 1 --to 2 --mode summary")
+    print("Try: promptledger review --id onboarding_email --from prod --to staging")
+    print(
+        "Try: promptledger export review --id onboarding_email --from prod --to staging --format md --out onboarding_review.md"
+    )
     print("Try: promptledger diff --id support_reply --from 1 --to 2 --mode metadata")
 
     if args.ui:

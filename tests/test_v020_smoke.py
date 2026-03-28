@@ -28,9 +28,11 @@ def test_v020_smoke(tmp_path, monkeypatch):
     unified = ledger.diff("alpha", 1, 2, mode="unified")
     context = ledger.diff("alpha", 1, 2, mode="context")
     ndiff = ledger.diff("alpha", 1, 2, mode="ndiff")
+    summary = ledger.diff("alpha", 1, 2, mode="summary")
     assert unified
     assert context
     assert ndiff
+    assert summary == "No confident semantic change detected."
 
     content = "same content"
     hash_value = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -77,3 +79,32 @@ def test_v020_smoke(tmp_path, monkeypatch):
 
     meta_diff = ledger.diff("meta", 1, 2, mode="metadata")
     assert meta_diff
+
+    ledger.add(
+        "review-demo",
+        "Write a friendly answer in bullets.",
+        reason="draft",
+        env="dev",
+        tags=["draft"],
+    )
+    ledger.add(
+        "review-demo",
+        "Please provide a professional response in JSON only.",
+        reason="release",
+        env="prod",
+        tags=["release"],
+    )
+    ledger.set_label("review-demo", 1, "staging")
+    ledger.set_label("review-demo", 2, "prod")
+
+    review = ledger.review("review-demo", "staging", "prod")
+    assert review.from_ref.ref_kind == "label"
+    assert review.to_ref.resolved_version == 2
+    assert [item.field for item in review.metadata_changes] == ["reason", "tags", "env"]
+    assert any(item.summary == "Tone became more formal." for item in review.semantic_summary)
+    assert any(item.summary == "Output format changed from bullets to json." for item in review.semantic_summary)
+
+    review_markdown_a = ledger.export_review_markdown("review-demo", "staging", "prod")
+    review_markdown_b = ledger.export_review_markdown("review-demo", "staging", "prod")
+    assert review_markdown_a == review_markdown_b
+    assert "# Prompt Review: `review-demo`" in review_markdown_a

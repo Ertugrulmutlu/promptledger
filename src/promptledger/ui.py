@@ -7,6 +7,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from promptledger.render import render_metadata_change_value
+except Exception:  # pragma: no cover - fallback for direct script execution
+    from .render import render_metadata_change_value
+
 
 def launch_ui() -> None:
     try:
@@ -63,6 +68,26 @@ def _format_timestamp(value: str) -> str:
         return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
         return value
+
+
+def _review_badges(review) -> list[str]:
+    badges: list[str] = []
+    for item in review.warnings:
+        badges.append(f"{item.severity.upper()}: {item.message}")
+    return badges
+
+
+def _review_metadata_rows(review) -> list[dict[str, str]]:
+    rows = []
+    for item in review.metadata_changes:
+        rows.append(
+            {
+                "field": item.field,
+                "from": render_metadata_change_value(item.old_value),
+                "to": render_metadata_change_value(item.new_value),
+            }
+        )
+    return rows
 
 
 def app():
@@ -179,7 +204,34 @@ def app():
     if from_version == to_version:
         st.info("Select two different versions to compare.")
     else:
+        review = ledger.review(selected_prompt, from_version, to_version)
+        st.markdown("### Review")
+        summary_col, warning_col = st.columns([2, 1])
+        with summary_col:
+            st.markdown("**Semantic summary**")
+            if review.semantic_summary:
+                for item in review.semantic_summary:
+                    st.markdown(f"- {item.summary}")
+            else:
+                st.caption("No confident semantic change detected.")
+        with warning_col:
+            st.markdown("**Warnings**")
+            badges = _review_badges(review)
+            if badges:
+                for badge in badges:
+                    st.caption(badge)
+            else:
+                st.caption("None")
+
+        meta_rows = _review_metadata_rows(review)
+        st.markdown("**Metadata diff**")
+        if meta_rows:
+            st.dataframe(meta_rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No metadata changes.")
+
         diff_text = ledger.diff(selected_prompt, from_version, to_version)
+        st.markdown("**Line diff**")
         st.code(diff_text or "(no diff)", language="diff")
         left_record = ledger.get(selected_prompt, from_version)
         right_record = ledger.get(selected_prompt, to_version)

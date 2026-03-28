@@ -18,12 +18,13 @@ It ships with a small CLI, a Python API, and a **read-only Streamlit viewer**. T
 ## What it is
 
 * A local prompt change ledger stored in SQLite
-* Git-style history with multiple diff modes (`unified`, `context`, `ndiff`, `metadata`)
-* Lightweight metadata support: `reason`, `author`, `tags`, `env`, `metrics`
-* Human-readable labels (`prod`, `staging`, etc.) with **append-only label history**
-* Deterministic exports (stable CSV / JSONL)
-* CLI and Python API for add / list / diff / search / export workflows
-* Read-only Streamlit UI with timeline, filtering, diff, and side-by-side comparison
+* Git-style prompt history with multiple diff modes via `difflib`
+* A prompt review workflow with heuristic semantic summaries and markdown export
+* Metadata support for `reason`, `author`, `tags`, `env`, and `metrics`
+* Label support for release-style pointers plus an append-only label history audit trail
+* Deterministic exports for history and review artifacts
+* CLI and Python API for add / get / list / diff / review / export workflows
+* A read-only Streamlit UI with timeline, filtering, review, diff, and side-by-side comparison
 * Newline normalization to avoid CRLF/LF noise
 
 ## What it is NOT
@@ -55,8 +56,6 @@ pip install "promptledger[ui]"
 * The first command installs the core CLI and Python API.
 * The second command installs optional Streamlit UI support.
 
----
-
 ## Quickstart
 
 ### CLI
@@ -79,6 +78,13 @@ promptledger diff --id onboarding --from prod --to staging
 promptledger diff --id onboarding --from 1 --to 2 --mode context
 promptledger diff --id onboarding --from 1 --to 2 --mode ndiff
 promptledger diff --id onboarding --from 1 --to 2 --mode metadata
+promptledger diff --id onboarding --from 1 --to 2 --mode summary
+
+promptledger review --id onboarding --from prod --to staging
+
+promptledger export --format jsonl --out prompt_history.jsonl
+promptledger export --format csv --out prompt_history.csv
+promptledger export review --id onboarding --from prod --to staging --format md --out review.md
 
 promptledger search --contains "friendly" --id onboarding --tag draft --env dev
 
@@ -92,10 +98,9 @@ promptledger ui
 Notes:
 
 * `promptledger list` lists all prompt versions across all prompts.
-* `promptledger search` exits with code `0` even when no results are found.
-* The UI is **read-only by design**; all writes go through the CLI or API.
-
----
+* `promptledger list --id onboarding` lists versions for a single prompt.
+* `promptledger search` exits with code `0` even when no results are found and prints `0 results`.
+* `promptledger ui` launches a read-only Streamlit UI.
 
 ### Python API
 
@@ -121,17 +126,32 @@ ledger.add(
     metrics={"accuracy": 0.94},
 )
 
-print(ledger.get("summary").version)
+latest = ledger.get("summary")
+print(latest.version, latest.content)
 print(ledger.diff("summary", 1, 2))
+
+review = ledger.review("summary", 1, 2)
+print(review.semantic_summary)
+print(ledger.export_review_markdown("summary", 1, 2))
 ```
 
----
+## Metadata
+
+Each prompt version can store:
+
+* `reason`
+* `author`
+* `tags`
+* `env` (`dev`, `staging`, `prod`)
+* `metrics` (for example accuracy, latency, or cost)
+
+This turns raw text history into a lightweight audit trail.
 
 ## Labels
 
-Labels are human-readable pointers to specific prompt versions (similar to movable git tags). They let you track active releases without duplicating prompt content.
+Labels are human-readable pointers to specific prompt versions. Use them to track active releases such as `prod`, `staging`, or `latest` without creating new prompt versions.
 
-Every label update is recorded in an **append-only label history log** for auditing and review.
+Every label change is recorded in an append-only label history log.
 
 ```bash
 promptledger label set --id onboarding --version 7 --name prod
@@ -142,82 +162,111 @@ promptledger label history --id onboarding
 promptledger status --id onboarding
 ```
 
----
+## Newline normalization
 
-## Metadata
+* Line endings are normalized to LF for hashing and diffing.
+* CRLF and LF content are treated as the same prompt content.
+* Review summaries avoid fake changes caused only by line-ending differences.
 
 Each prompt version can store optional metadata:
 
-* `reason` — why the prompt changed
-* `author` — who made the change
-* `tags` — arbitrary grouping labels
-* `env` — `dev`, `staging`, `prod`
-* `metrics` — JSON blob (accuracy, latency, cost, ratings, etc.)
+* Inside a Git repository: `<repo_root>/.promptledger/promptledger.db`
+* Outside Git: `<cwd>/.promptledger/promptledger.db`
+* Environment override: `PROMPTLEDGER_HOME=/custom/path`
+* Explicit override: `PromptLedger(db_path="/abs/path/to.db")`
 
 This turns raw text history into a lightweight audit trail.
 
 ---
 
-## Newline normalization
+## Export determinism
 
-* Line endings are normalized to LF before hashing and diffing.
-* Windows CRLF and Unix LF content are treated as identical.
-* Diff output focuses on meaningful textual changes.
+* CSV exports use a stable column order.
+* JSONL exports use sorted keys.
+* Repeated exports of the same data are byte-identical.
+* Review markdown export is deterministic for the same input.
+
+## Prompt Review
+
+Prompt review is a small, local-first release and regression review workflow. It compares two explicit versions or labels, resolves them to concrete versions, and produces:
+
+* heuristic semantic summary notes
+* deterministic metadata changes
+* label context for compared refs
+* warning flags for likely review hotspots
+
+The semantic summary is rule-based only. It does not call external APIs and stays intentionally conservative when a change is noisy or ambiguous.
+
+```bash
+promptledger review --id onboarding --from prod --to staging
+promptledger diff --id onboarding --from 7 --to 9 --mode summary
+promptledger export review --id onboarding --from prod --to staging --format md --out onboarding_review.md
+```
+
+### Concise review output example
+
+```text
+Prompt Review: onboarding
+From: prod -> v7
+To: staging -> v9
+
+Semantic summary
+- Constraints tightened.
+- Output format changed from bullets to json.
+
+Metadata changes
+- `env`: prod -> staging
+```
+
+### Markdown export example
+
+```md
+# Prompt Review: `onboarding`
+
+## Compared refs
+
+- From: `prod` -> `v7`
+- To: `staging` -> `v9`
+```
 
 ---
 
 ## Storage model
 
-* Inside a git repository: `<repo_root>/.promptledger/promptledger.db`
-* Outside git: `<cwd>/.promptledger/promptledger.db`
-* Environment override: `PROMPTLEDGER_HOME=/custom/path`
-* Explicit override: `PromptLedger(db_path="/abs/path/to.db")`
+### 1. Identify scope
 
-The database is **not committed to git by default**.
+* `promptledger list --id <prompt_id>` to inspect recent versions
+* `promptledger label list --id <prompt_id>` to inspect active releases
 
----
-
-## Export determinism
-
-* CSV exports have a fixed column order.
-* JSONL exports use sorted keys.
-* Repeated exports of the same data are byte-for-byte identical.
-
-This makes PromptLedger suitable for reviews, audits, and downstream tooling.
-
----
-
-## Review workflow
-
-Use PromptLedger the same way you would review code changes.
-
-1. Inspect history
-
-* `promptledger list --id <prompt_id>`
-* `promptledger label list --id <prompt_id>`
-
-2. Review the change
+### 2. Review the change
 
 * `promptledger diff --id <prompt_id> --from <old> --to <new>`
+* `promptledger diff --id <prompt_id> --from <old> --to <new> --mode summary`
+* `promptledger review --id <prompt_id> --from <old> --to <new>`
 
-3. Verify metadata
+Focus on intent, tone, structure, constraints, and formatting expectations.
+
+### 3. Verify metadata
 
 * `promptledger show --id <prompt_id> --version <new>`
 
-4. Promote
+Confirm that `reason`, `author`, `tags`, `env`, and `metrics` match the change.
 
-* `promptledger label set --id <prompt_id> --version <new> --name prod`
+### 4. Validate safety
 
----
+* Look for accidental secrets or credentials.
+* Ensure sensitive data is not embedded in prompt text.
+
+### 5. Promote with labels
+
+* `promptledger label set --id <prompt_id> --version <new> --name <label>`
+* Update `prod` or `staging` only after review.
 
 ## Security
 
-PromptLedger never sends data anywhere.
+PromptLedger does not send prompt data anywhere.
 
-The CLI includes an advisory warning for common secret patterns (e.g. `sk-`, `AKIA`, `-----BEGIN`).
-Use `--no-secret-warn` to suppress this warning.
-
----
+Do not store API keys or secrets in prompt text. Use `--no-secret-warn` to suppress the CLI warning.
 
 ## Development
 
@@ -228,3 +277,7 @@ Use `--no-secret-warn` to suppress this warning.
 pytest
 ```
 
+## Optional UI note
+
+* The Streamlit viewer includes a read-only review panel for semantic summary, metadata changes, warnings, and side-by-side comparison.
+* Screenshot/GIF placeholder: add a comparison view capture here later if you want visuals in the docs.

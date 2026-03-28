@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import db
+from .render import export_review_markdown as render_review_markdown
+from .review import MetadataChange, ReviewRef, ReviewResult, ReviewWarning, summarize_semantic_changes
 
 
 @dataclass
@@ -418,6 +420,11 @@ class PromptLedger:
         right = self.get(prompt_id, to_version)
         if left is None or right is None:
             raise ValueError("One or both versions not found.")
+        if mode == "summary":
+            review = self.review(prompt_id, from_version, to_version)
+            if not review.semantic_summary:
+                return "No confident semantic change detected."
+            return "\n".join(item.summary for item in review.semantic_summary)
         if mode == "metadata":
             return self._diff_metadata(prompt_id, left, right)
         left_lines = normalize_newlines(left.content).splitlines(keepends=True)
@@ -473,6 +480,45 @@ class PromptLedger:
             include_metadata=include_metadata,
         )
 
+    def review(self, prompt_id: str, from_ref: int | str, to_ref: int | str) -> ReviewResult:
+        from_resolved = self.resolve_ref(prompt_id, from_ref)
+        to_resolved = self.resolve_ref(prompt_id, to_ref)
+        left = self.get(prompt_id, from_resolved.resolved_version)
+        right = self.get(prompt_id, to_resolved.resolved_version)
+        if left is None or right is None:
+            raise ValueError("One or both versions not found.")
+
+        metadata_changes = self._metadata_changes(left, right)
+        semantic_summary = summarize_semantic_changes(
+            normalize_newlines(left.content),
+            normalize_newlines(right.content),
+        )
+        labels_by_version = self._labels_for_versions(
+            prompt_id, [from_resolved.resolved_version, to_resolved.resolved_version]
+        )
+        warnings = self._review_warnings(left, right, semantic_summary, metadata_changes)
+        notes = self._review_notes(left, right, semantic_summary)
+        return ReviewResult(
+            prompt_id=prompt_id,
+            from_ref=from_resolved,
+            to_ref=to_resolved,
+            semantic_summary=semantic_summary,
+            metadata_changes=metadata_changes,
+            label_context={
+                "compared_refs": {
+                    "from": from_resolved.to_dict(),
+                    "to": to_resolved.to_dict(),
+                },
+                "labels_by_version": labels_by_version,
+            },
+            warnings=warnings,
+            notes=notes,
+            text_changed=normalize_newlines(left.content) != normalize_newlines(right.content),
+        )
+
+    def export_review_markdown(self, prompt_id: str, from_ref: int | str, to_ref: int | str) -> str:
+        return render_review_markdown(self.review(prompt_id, from_ref, to_ref))
+
     def export(self, format: str, out_path: str | Path) -> Path:
         format = format.lower()
         records = self.list()
@@ -523,13 +569,21 @@ class PromptLedger:
             created_at=row["created_at"],
         )
 
-    def _resolve_ref(self, prompt_id: str, ref: int | str) -> int:
+    def resolve_ref(self, prompt_id: str, ref: int | str) -> ReviewRef:
         if isinstance(ref, int):
-            return ref
+            return ReviewRef(input_ref=str(ref), resolved_version=ref, ref_kind="version")
         try:
-            return int(ref)
+            version = int(ref)
+            return ReviewRef(input_ref=str(ref), resolved_version=version, ref_kind="version")
         except (TypeError, ValueError):
-            return self.get_label(prompt_id, ref)
+            return ReviewRef(
+                input_ref=str(ref),
+                resolved_version=self.get_label(prompt_id, str(ref)),
+                ref_kind="label",
+            )
+
+    def _resolve_ref(self, prompt_id: str, ref: int | str) -> int:
+        return self.resolve_ref(prompt_id, ref).resolved_version
 
     def _diff_lines(
         self,
@@ -585,3 +639,80 @@ class PromptLedger:
             tofile=f"{prompt_id}@{right.version}",
             mode="unified",
         )
+
+    def _metadata_changes(self, left: PromptRecord, right: PromptRecord) -> list[MetadataChange]:
+        changes: list[MetadataChange] = []
+        pairs = [
+            ("reason", left.reason, right.reason),
+            ("author", left.author, right.author),
+            ("tags", left.tags, right.tags),
+            ("env", left.env, right.env),
+            ("metrics", left.metrics, right.metrics),
+        ]
+        for field, old_value, new_value in pairs:
+            if old_value != new_value:
+                changes.append(MetadataChange(field=field, old_value=old_value, new_value=new_value))
+        return changes
+
+    def _labels_for_versions(self, prompt_id: str, versions: list[int]) -> dict[int, list[str]]:
+        labels = self.list_labels(prompt_id)
+        by_version = {version: [] for version in sorted(set(versions))}
+        for item in labels:
+            version = item["version"]
+            if version in by_version:
+                by_version[version].append(item["label"])
+        for version in by_version:
+            by_version[version].sort()
+        return by_version
+
+    def _review_warnings(
+        self,
+        left: PromptRecord,
+        right: PromptRecord,
+        semantic_summary,
+        metadata_changes: list[MetadataChange],
+    ) -> list[ReviewWarning]:
+        warnings: list[ReviewWarning] = []
+        if left.version == right.version:
+            warnings.append(
+                ReviewWarning(
+                    code="same-version",
+                    severity="info",
+                    message="Comparing a version to itself.",
+                )
+            )
+        if left.env and right.env and left.env != right.env:
+            warnings.append(
+                ReviewWarning(
+                    code="env-changed",
+                    severity="warning",
+                    message=f"Environment changed from {left.env} to {right.env}.",
+                )
+            )
+        if any(item.category in {"safety", "refusal"} for item in semantic_summary):
+            warnings.append(
+                ReviewWarning(
+                    code="behavior-drift",
+                    severity="warning",
+                    message="Policy or refusal wording changed; review likely behavior drift carefully.",
+                )
+            )
+        if not semantic_summary and metadata_changes:
+            warnings.append(
+                ReviewWarning(
+                    code="metadata-only",
+                    severity="info",
+                    message="Only metadata changed; prompt text is unchanged after newline normalization.",
+                )
+            )
+        return warnings
+
+    def _review_notes(self, left: PromptRecord, right: PromptRecord, semantic_summary) -> list[str]:
+        notes: list[str] = []
+        left_lines = len(normalize_newlines(left.content).splitlines())
+        right_lines = len(normalize_newlines(right.content).splitlines())
+        if left_lines != right_lines:
+            notes.append(f"Line count changed from {left_lines} to {right_lines}.")
+        if semantic_summary:
+            notes.append("Semantic summaries are heuristic and intentionally conservative.")
+        return notes

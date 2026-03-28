@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import PromptLedger, contains_secret, normalize_newlines
+from .render import render_review_text
 
 
 def _format_timestamp(value: str) -> str:
@@ -82,16 +83,25 @@ def main(argv: list[str] | None = None) -> int:
     diff_parser.add_argument("--to", dest="to_version", required=True)
     diff_parser.add_argument(
         "--mode",
-        choices=["unified", "context", "ndiff", "metadata"],
+        choices=["unified", "context", "ndiff", "metadata", "summary"],
         default="unified",
     )
+
+    review_parser = subparsers.add_parser("review", help="Review two prompt versions or labels.")
+    review_parser.add_argument("--id", required=True, dest="prompt_id")
+    review_parser.add_argument("--from", dest="from_version", required=True)
+    review_parser.add_argument("--to", dest="to_version", required=True)
 
     status_parser = subparsers.add_parser("status", help="Show prompt status.")
     status_parser.add_argument("--id", dest="prompt_id")
 
     export_parser = subparsers.add_parser("export", help="Export prompt history.")
-    export_parser.add_argument("--format", choices=["jsonl", "csv"], required=True)
+    export_parser.add_argument("export_command", nargs="?")
+    export_parser.add_argument("--format", choices=["jsonl", "csv", "md"], required=True)
     export_parser.add_argument("--out", type=Path, required=True)
+    export_parser.add_argument("--id", dest="prompt_id")
+    export_parser.add_argument("--from", dest="from_version")
+    export_parser.add_argument("--to", dest="to_version")
 
     search_parser = subparsers.add_parser("search", help="Search prompt content.")
     search_parser.add_argument("--contains", required=True)
@@ -199,6 +209,14 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 return _error(f"Failed to diff prompts: {exc}", 1)
             print(diff_text)
+        elif args.command == "review":
+            try:
+                review = ledger.review(args.prompt_id, args.from_version, args.to_version)
+            except ValueError as exc:
+                return _error(str(exc), 2)
+            except Exception as exc:
+                return _error(f"Failed to review prompts: {exc}", 1)
+            print(render_review_text(review), end="")
         elif args.command == "status":
             try:
                 status = ledger.status(args.prompt_id)
@@ -219,8 +237,30 @@ def main(argv: list[str] | None = None) -> int:
                         f"{prompt_id}\t{info['latest_version']}\t{latest_created_fmt}\t{label_text}"
                     )
         elif args.command == "export":
-            path = ledger.export(args.format, args.out)
-            print(f"Exported to {path}")
+            if args.export_command == "review":
+                if not args.prompt_id or not args.from_version or not args.to_version:
+                    return _error("Review export requires --id, --from, and --to.", 2)
+                if args.format != "md":
+                    return _error("Review export currently supports only --format md.", 2)
+                try:
+                    markdown = ledger.export_review_markdown(
+                        args.prompt_id,
+                        args.from_version,
+                        args.to_version,
+                    )
+                    args.out.write_text(markdown, encoding="utf-8")
+                except ValueError as exc:
+                    return _error(str(exc), 2)
+                except Exception as exc:
+                    return _error(f"Failed to export review: {exc}", 1)
+                print(f"Exported to {args.out}")
+            else:
+                if args.export_command:
+                    return _error("Unknown export command.", 2)
+                if args.format == "md":
+                    return _error("History export supports only jsonl or csv.", 2)
+                path = ledger.export(args.format, args.out)
+                print(f"Exported to {path}")
         elif args.command == "search":
             records = ledger.search(
                 contains=args.contains,

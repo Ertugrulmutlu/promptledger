@@ -63,6 +63,22 @@ def test_diff_metadata_mode(tmp_path, monkeypatch):
     assert '+  "reason": "second"' in diff_res.stdout
 
 
+def test_diff_summary_mode(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    _run_cli(["init"], cwd=tmp_path)
+    _run_cli(["add", "--id", "demo", "--text", "Write a friendly answer in bullets."], cwd=tmp_path)
+    _run_cli(["add", "--id", "demo", "--text", "Please provide a professional response in JSON only."], cwd=tmp_path)
+
+    diff_res = _run_cli(
+        ["diff", "--id", "demo", "--from", "1", "--to", "2", "--mode", "summary"],
+        cwd=tmp_path,
+    )
+    assert diff_res.returncode == 0
+    assert "Tone became more formal." in diff_res.stdout
+    assert "Output format changed from bullets to json." in diff_res.stdout
+
+
 def test_status_command(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
@@ -106,6 +122,51 @@ def test_label_history(tmp_path, monkeypatch):
     assert len(cols) == 5
     assert cols[0] == "demo"
     assert cols[1] == "prod"
+
+
+def test_review_command_and_markdown_export(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PROMPTLEDGER_HOME", str(home))
+    _run_cli(["init"], cwd=tmp_path)
+    _run_cli(
+        ["add", "--id", "demo", "--text", "Write a friendly answer in bullets.", "--reason", "draft", "--env", "dev"],
+        cwd=tmp_path,
+    )
+    _run_cli(
+        ["add", "--id", "demo", "--text", "Please provide JSON only.", "--reason", "release", "--env", "prod"],
+        cwd=tmp_path,
+    )
+    _run_cli(["label", "set", "--id", "demo", "--version", "1", "--name", "staging"], cwd=tmp_path)
+    _run_cli(["label", "set", "--id", "demo", "--version", "2", "--name", "prod"], cwd=tmp_path)
+
+    review_res = _run_cli(["review", "--id", "demo", "--from", "staging", "--to", "prod"], cwd=tmp_path)
+    assert review_res.returncode == 0
+    assert "Prompt Review: demo" in review_res.stdout
+    assert "Semantic summary" in review_res.stdout
+    assert "Metadata changes" in review_res.stdout
+
+    out_path = tmp_path / "review.md"
+    export_res = _run_cli(
+        [
+            "export",
+            "review",
+            "--id",
+            "demo",
+            "--from",
+            "staging",
+            "--to",
+            "prod",
+            "--format",
+            "md",
+            "--out",
+            str(out_path),
+        ],
+        cwd=tmp_path,
+    )
+    assert export_res.returncode == 0
+    content = out_path.read_text(encoding="utf-8")
+    assert "# Prompt Review: `demo`" in content
+    assert "## Metadata changes" in content
 
 def test_label_set_unknown_version(tmp_path):
     _run_cli(["init"], cwd=tmp_path)

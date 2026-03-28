@@ -39,3 +39,18 @@ def test_diff_unknown_version_returns_2(tmp_path):
     result = _run_cli(["diff", "--id", "demo", "--from", "1", "--to", "2"], cwd=tmp_path)
     assert result.returncode == 2
     assert "not found" in result.stderr.lower()
+
+
+def test_review_unknown_label_returns_2(tmp_path):
+    _run_cli(["init"], cwd=tmp_path)
+    _run_cli(["add", "--id", "demo", "--text", "hello"], cwd=tmp_path)
+    result = _run_cli(["review", "--id", "demo", "--from", "missing", "--to", "1"], cwd=tmp_path)
+    assert result.returncode == 2
+    assert "label not found" in result.stderr.lower()
+
+
+def test_export_review_missing_args_returns_2(tmp_path):
+    _run_cli(["init"], cwd=tmp_path)
+    result = _run_cli(["export", "review", "--format", "md", "--out", "review.md"], cwd=tmp_path)
+    assert result.returncode == 2
+    assert "requires --id, --from, and --to" in result.stderr.lower()

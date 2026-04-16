@@ -34,11 +34,13 @@ def _load_data():
         records = ledger.list()
         labels = ledger.list_labels()
         label_events = ledger.list_label_events(limit=500)
+        markers = ledger.list_markers()
     except RuntimeError:
         records = []
         labels = []
         label_events = []
-    return ledger, records, labels, label_events
+        markers = []
+    return ledger, records, labels, label_events, markers
 
 
 def _labels_for_prompt(labels, prompt_id: str) -> dict[str, int]:
@@ -58,6 +60,14 @@ def _unique(items):
         seen.add(item)
         result.append(item)
     return result
+
+
+def _markers_for_prompt_version(markers, prompt_id: str, version: int) -> list[str]:
+    result = []
+    for item in markers:
+        if item["prompt_id"] == prompt_id and item["version"] == version:
+            result.append(item["name"])
+    return sorted(result)
 
 
 def _format_timestamp(value: str) -> str:
@@ -97,7 +107,7 @@ def app():
     st.title("PromptLedger")
     st.caption("Local-first prompt version history")
 
-    ledger, records, labels, label_events = _load_data()
+    ledger, records, labels, label_events, markers = _load_data()
     if not records:
         st.info("No prompt history found. Run `promptledger init` and `promptledger add`.")
         return
@@ -125,12 +135,15 @@ def app():
     timeline_rows = []
     for r in filtered:
         label_map = _labels_for_prompt(labels, r.prompt_id)
+        marker_names = _markers_for_prompt_version(markers, r.prompt_id, r.version)
         timeline_rows.append(
             {
                 "prompt_id": r.prompt_id,
                 "version": r.version,
                 "created_at": _format_timestamp(r.created_at),
                 "env": r.env or "",
+                "collection": r.collection or "",
+                "role": r.role or "",
                 "tags": ", ".join(r.tags) if r.tags else "",
                 "reason": r.reason or "",
                 "labels": ", ".join(
@@ -138,6 +151,7 @@ def app():
                 )
                 if label_map
                 else "",
+                "markers": ", ".join(marker_names) if marker_names else "",
             }
         )
     st.dataframe(timeline_rows, use_container_width=True)
@@ -177,19 +191,31 @@ def app():
         with meta_col:
             st.markdown("**Metadata**")
             label_map = _labels_for_prompt(labels, record.prompt_id)
-            st.write(
-                {
-                    "prompt_id": record.prompt_id,
-                    "version": record.version,
-                    "created_at": _format_timestamp(record.created_at),
-                    "env": record.env,
-                    "tags": record.tags,
-                    "reason": record.reason,
-                    "author": record.author,
-                    "metrics": record.metrics,
-                    "labels": label_map if label_map else None,
-                }
-            )
+            marker_names = _markers_for_prompt_version(markers, record.prompt_id, record.version)
+            metadata = {
+                "prompt_id": record.prompt_id,
+                "version": record.version,
+                "created_at": _format_timestamp(record.created_at),
+            }
+            if record.env:
+                metadata["env"] = record.env
+            if record.collection:
+                metadata["collection"] = record.collection
+            if record.role:
+                metadata["role"] = record.role
+            if record.tags:
+                metadata["tags"] = record.tags
+            if record.reason:
+                metadata["reason"] = record.reason
+            if record.author:
+                metadata["author"] = record.author
+            if record.metrics:
+                metadata["metrics"] = record.metrics
+            if label_map:
+                metadata["labels"] = label_map
+            if marker_names:
+                metadata["markers"] = marker_names
+            st.write(metadata)
         with content_col:
             st.markdown("**Content**")
             st.code(record.content, language="")
@@ -238,10 +264,22 @@ def app():
         if left_record and right_record:
             left_col, right_col = st.columns(2)
             with left_col:
-                st.markdown(f"**{selected_prompt}@{from_version}**")
+                left_markers = _markers_for_prompt_version(markers, selected_prompt, from_version)
+                left_title = f"**{selected_prompt}@{from_version}**"
+                if left_record.role:
+                    left_title += f"  \nRole: {left_record.role}"
+                if left_markers:
+                    left_title += f"  \nMarkers: {', '.join(left_markers)}"
+                st.markdown(left_title)
                 st.code(left_record.content, language="")
             with right_col:
-                st.markdown(f"**{selected_prompt}@{to_version}**")
+                right_markers = _markers_for_prompt_version(markers, selected_prompt, to_version)
+                right_title = f"**{selected_prompt}@{to_version}**"
+                if right_record.role:
+                    right_title += f"  \nRole: {right_record.role}"
+                if right_markers:
+                    right_title += f"  \nMarkers: {', '.join(right_markers)}"
+                st.markdown(right_title)
                 st.code(right_record.content, language="")
 
 

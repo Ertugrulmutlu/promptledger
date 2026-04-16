@@ -186,12 +186,21 @@ def test_markdown_export_is_deterministic(tmp_path):
 def test_ui_review_helpers(tmp_path):
     ledger = PromptLedger(root=tmp_path)
     ledger.init()
-    ledger.add("demo", "Answer plainly.")
-    ledger.add("demo", "Answer plainly in exactly 2 bullets.", env="prod")
+    ledger.add("demo", "Answer plainly.", collection="chunking-lab", role="system")
+    ledger.add(
+        "demo",
+        "Answer plainly in exactly 2 bullets.",
+        env="prod",
+        collection="chunking-lab",
+        role="eval",
+    )
 
     review = ledger.review("demo", 1, 2)
     badges = _review_badges(review)
     rows = _review_metadata_rows(review)
 
     assert isinstance(badges, list)
-    assert rows == [{"field": "env", "from": "(empty)", "to": "prod"}]
+    assert rows == [
+        {"field": "env", "from": "(empty)", "to": "prod"},
+        {"field": "role", "from": "system", "to": "eval"},
+    ]

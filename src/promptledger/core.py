@@ -27,11 +27,15 @@ class PromptRecord:
     author: str | None
     tags: list[str] | None
     env: str | None
+    collection: str | None
+    role: str | None
     metrics: dict[str, Any] | None
     created_at: str
 
 
 SECRET_PATTERNS = ("sk-", "AKIA", "-----BEGIN")
+BUILTIN_MARKERS = ("milestone", "stable")
+BUILTIN_ROLES = ("system", "user", "template", "modelfile", "eval")
 
 
 def normalize_newlines(text: str) -> str:
@@ -40,6 +44,22 @@ def normalize_newlines(text: str) -> str:
 
 def contains_secret(text: str) -> bool:
     return any(pattern in text for pattern in SECRET_PATTERNS)
+
+
+def normalize_collection(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def validate_role(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in BUILTIN_ROLES:
+        allowed = ", ".join(BUILTIN_ROLES)
+        raise ValueError(f"Unsupported role. Use one of: {allowed}.")
+    return value
 
 
 class PromptLedger:
@@ -80,10 +100,14 @@ class PromptLedger:
         author: str | None = None,
         tags: list[str] | None = None,
         env: str | None = None,
+        collection: str | None = None,
+        role: str | None = None,
         metrics: dict[str, Any] | None = None,
         warn_on_secrets: bool = True,
     ) -> dict[str, Any]:
         content = normalize_newlines(content)
+        collection = normalize_collection(collection)
+        role = validate_role(role)
         if warn_on_secrets and contains_secret(content):
             warnings.warn("Possible secret detected in prompt content.", UserWarning, stacklevel=2)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -113,8 +137,8 @@ class PromptLedger:
             conn.execute(
                 """
                 INSERT INTO prompt_versions (
-                    prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prompt_id, version, content, content_hash, reason, author, tags, env, collection, role, metrics, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     prompt_id,
@@ -125,6 +149,8 @@ class PromptLedger:
                     author,
                     tags_json,
                     env,
+                    collection,
+                    role,
                     metrics_json,
                     created_at,
                 ),
@@ -142,6 +168,8 @@ class PromptLedger:
         prompt_id: str | None = None,
         tags: Iterable[str] | None = None,
         env: str | None = None,
+        collection: str | None = None,
+        role: str | None = None,
     ) -> list[PromptRecord]:
         filters = []
         params: list[Any] = []
@@ -151,12 +179,20 @@ class PromptLedger:
         if env:
             filters.append("env = ?")
             params.append(env)
+        normalized_collection = normalize_collection(collection)
+        if normalized_collection:
+            filters.append("collection = ?")
+            params.append(normalized_collection)
+        validated_role = validate_role(role)
+        if validated_role:
+            filters.append("role = ?")
+            params.append(validated_role)
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
 
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
+                SELECT prompt_id, version, content, content_hash, reason, author, tags, env, collection, role, metrics, created_at
                 FROM prompt_versions
                 {where}
                 ORDER BY created_at DESC
@@ -261,6 +297,90 @@ class PromptLedger:
             )
             conn.commit()
 
+    def set_marker(self, prompt_id: str, version: int, name: str) -> bool:
+        self._validate_marker_name(name)
+        record = self.get(prompt_id, version)
+        if record is None:
+            raise ValueError("Prompt version not found.")
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO markers (prompt_id, version, name, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (prompt_id, version, name, created_at),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def remove_marker(self, prompt_id: str, version: int, name: str) -> bool:
+        self._validate_marker_name(name)
+        record = self.get(prompt_id, version)
+        if record is None:
+            raise ValueError("Prompt version not found.")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM markers
+                WHERE prompt_id = ? AND version = ? AND name = ?
+                """,
+                (prompt_id, version, name),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def list_markers(
+        self,
+        prompt_id: str | None = None,
+        version: int | None = None,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if prompt_id:
+            filters.append("prompt_id = ?")
+            params.append(prompt_id)
+        if version is not None:
+            filters.append("version = ?")
+            params.append(version)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT prompt_id, version, name, created_at
+                FROM markers
+                {where}
+                ORDER BY prompt_id ASC, version DESC, name ASC
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "prompt_id": row["prompt_id"],
+                "version": int(row["version"]),
+                "name": row["name"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def get_markers(self, prompt_id: str, version: int) -> list[str]:
+        record = self.get(prompt_id, version)
+        if record is None:
+            raise ValueError("Prompt version not found.")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT name
+                FROM markers
+                WHERE prompt_id = ? AND version = ?
+                ORDER BY name ASC
+                """,
+                (prompt_id, version),
+            ).fetchall()
+        return [str(row["name"]) for row in rows]
+
     def get_label(self, prompt_id: str, label: str) -> int:
         with self._connect() as conn:
             row = conn.execute(
@@ -351,9 +471,14 @@ class PromptLedger:
         author: str | None = None,
         tag: str | None = None,
         env: str | None = None,
+        collection: str | None = None,
+        role: str | None = None,
     ) -> list[PromptRecord]:
-        filters = ["content LIKE ?"]
-        params: list[Any] = [f"%{contains}%"]
+        filters = []
+        params: list[Any] = []
+        if contains:
+            filters.append("content LIKE ?")
+            params.append(f"%{contains}%")
         if prompt_id:
             filters.append("prompt_id = ?")
             params.append(prompt_id)
@@ -363,12 +488,20 @@ class PromptLedger:
         if env:
             filters.append("env = ?")
             params.append(env)
-        where = f"WHERE {' AND '.join(filters)}"
+        normalized_collection = normalize_collection(collection)
+        if normalized_collection:
+            filters.append("collection = ?")
+            params.append(normalized_collection)
+        validated_role = validate_role(role)
+        if validated_role:
+            filters.append("role = ?")
+            params.append(validated_role)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
 
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
+                SELECT prompt_id, version, content, content_hash, reason, author, tags, env, collection, role, metrics, created_at
                 FROM prompt_versions
                 {where}
                 ORDER BY created_at DESC
@@ -386,7 +519,7 @@ class PromptLedger:
             if version is None:
                 row = conn.execute(
                     """
-                    SELECT prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
+                    SELECT prompt_id, version, content, content_hash, reason, author, tags, env, collection, role, metrics, created_at
                     FROM prompt_versions
                     WHERE prompt_id = ?
                     ORDER BY version DESC
@@ -397,7 +530,7 @@ class PromptLedger:
             else:
                 row = conn.execute(
                     """
-                    SELECT prompt_id, version, content, content_hash, reason, author, tags, env, metrics, created_at
+                    SELECT prompt_id, version, content, content_hash, reason, author, tags, env, collection, role, metrics, created_at
                     FROM prompt_versions
                     WHERE prompt_id = ? AND version = ?
                     LIMIT 1
@@ -538,6 +671,8 @@ class PromptLedger:
                 "author",
                 "tags",
                 "env",
+                "collection",
+                "role",
                 "metrics",
                 "created_at",
             ]
@@ -565,6 +700,8 @@ class PromptLedger:
             author=row["author"],
             tags=tags,
             env=row["env"],
+            collection=row["collection"],
+            role=row["role"],
             metrics=metrics,
             created_at=row["created_at"],
         )
@@ -619,6 +756,8 @@ class PromptLedger:
             "author": left.author,
             "tags": left.tags,
             "env": left.env,
+            "collection": left.collection,
+            "role": left.role,
             "metrics": left.metrics,
         }
         right_meta = {
@@ -626,6 +765,8 @@ class PromptLedger:
             "author": right.author,
             "tags": right.tags,
             "env": right.env,
+            "collection": right.collection,
+            "role": right.role,
             "metrics": right.metrics,
         }
         left_text = json.dumps(left_meta, sort_keys=True, indent=2)
@@ -647,6 +788,8 @@ class PromptLedger:
             ("author", left.author, right.author),
             ("tags", left.tags, right.tags),
             ("env", left.env, right.env),
+            ("collection", left.collection, right.collection),
+            ("role", left.role, right.role),
             ("metrics", left.metrics, right.metrics),
         ]
         for field, old_value, new_value in pairs:
@@ -664,6 +807,22 @@ class PromptLedger:
         for version in by_version:
             by_version[version].sort()
         return by_version
+
+    def _markers_for_versions(self, prompt_id: str, versions: list[int]) -> dict[int, list[str]]:
+        markers = self.list_markers(prompt_id=prompt_id)
+        by_version = {version: [] for version in sorted(set(versions))}
+        for item in markers:
+            version = item["version"]
+            if version in by_version:
+                by_version[version].append(item["name"])
+        for version in by_version:
+            by_version[version].sort()
+        return by_version
+
+    def _validate_marker_name(self, name: str) -> None:
+        if name not in BUILTIN_MARKERS:
+            allowed = ", ".join(BUILTIN_MARKERS)
+            raise ValueError(f"Unsupported marker name. Use one of: {allowed}.")
 
     def _review_warnings(
         self,

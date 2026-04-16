@@ -54,3 +54,23 @@ def test_export_review_missing_args_returns_2(tmp_path):
     result = _run_cli(["export", "review", "--format", "md", "--out", "review.md"], cwd=tmp_path)
     assert result.returncode == 2
     assert "requires --id, --from, and --to" in result.stderr.lower()
+
+
+def test_add_invalid_role_returns_2(tmp_path):
+    _run_cli(["init"], cwd=tmp_path)
+    result = _run_cli(
+        ["add", "--id", "demo", "--text", "hello", "--role", "assistant"],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr.lower()
+
+
+def test_enzo_easter_egg_prints_message(tmp_path):
+    result = _run_cli(["enzo"], cwd=tmp_path)
+    assert result.returncode == 0
+    assert "UnclaEnzo" in result.stdout
+    assert "lower-friction iteration" in result.stdout
+    assert "prompt-library thinking" in result.stdout
+    assert "messy workflows" in result.stdout
+    assert "funny idea" in result.stdout.lower()

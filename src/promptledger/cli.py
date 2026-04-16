@@ -8,8 +8,16 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import PromptLedger, contains_secret, normalize_newlines
+from .core import (
+    BUILTIN_MARKERS,
+    BUILTIN_ROLES,
+    PromptLedger,
+    contains_secret,
+    normalize_collection,
+    normalize_newlines,
+)
 from .render import render_review_text
+from .ui import launch_ui
 
 
 def _format_timestamp(value: str) -> str:
@@ -20,7 +28,6 @@ def _format_timestamp(value: str) -> str:
         return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
         return value
-from .ui import launch_ui
 
 
 def _parse_tags(value: str | None) -> list[str] | None:
@@ -39,12 +46,66 @@ def _parse_metrics(value: str | None):
         raise SystemExit(f"Invalid metrics JSON: {exc}") from exc
 
 
+def _resolve_add_metadata_defaults(
+    ledger: PromptLedger, args
+) -> tuple[str | None, list[str] | None, str | None, str | None, str | None]:
+    tags = _parse_tags(args.tags)
+    collection = normalize_collection(args.collection)
+    if not args.quick:
+        return args.author, tags, args.env, collection, args.role
+
+    latest = ledger.get(args.prompt_id)
+    if latest is None:
+        return args.author, tags, args.env, collection, args.role
+
+    author = args.author if args.author is not None else latest.author
+    resolved_tags = tags if tags is not None else latest.tags
+    env = args.env if args.env is not None else latest.env
+    resolved_collection = collection if args.collection is not None else latest.collection
+    role = args.role if args.role is not None else latest.role
+    return author, resolved_tags, env, resolved_collection, role
+
+
 def _print_record(record) -> None:
     tags = ",".join(record.tags) if record.tags else ""
     env = record.env or ""
+    collection = record.collection or ""
+    role = record.role or ""
     reason = record.reason or ""
     created = _format_timestamp(record.created_at)
-    print(f"{record.prompt_id}\t{record.version}\t{created}\t{env}\t{tags}\t{reason}")
+    print(f"{record.prompt_id}\t{record.version}\t{created}\t{env}\t{collection}\t{role}\t{tags}\t{reason}")
+
+
+def _print_record_with_markers(record, markers: list[str] | None = None) -> None:
+    tags = ",".join(record.tags) if record.tags else ""
+    env = record.env or ""
+    collection = record.collection or ""
+    role = record.role or ""
+    reason = record.reason or ""
+    marker_text = ",".join(markers or [])
+    created = _format_timestamp(record.created_at)
+    print(
+        f"{record.prompt_id}\t{record.version}\t{created}\t{env}\t{collection}\t{role}\t{tags}\t{reason}\t{marker_text}"
+    )
+
+
+def _resolve_target_version(ledger: PromptLedger, prompt_id: str, version: int | None) -> int:
+    if version is not None:
+        return version
+    latest = ledger.get(prompt_id)
+    if latest is None:
+        raise ValueError("Prompt version not found.")
+    return latest.version
+
+
+def _markers_by_prompt_version(items: list[dict[str, object]]) -> dict[tuple[str, int], list[str]]:
+    result: dict[tuple[str, int], list[str]] = {}
+    for item in items:
+        key = (str(item["prompt_id"]), int(item["version"]))
+        result.setdefault(key, []).append(str(item["name"]))
+    for names in result.values():
+        names.sort()
+    return result
 
 
 def _error(message: str, code: int) -> int:
@@ -52,11 +113,19 @@ def _error(message: str, code: int) -> int:
     return code
 
 
+def _print_enzo_easter_egg() -> None:
+    print("Thanks, UnclaEnzo.")
+    print("Your early feedback helped shape PromptLedger:")
+    print("lower-friction iteration, prompt-library thinking, and respect for messy workflows.")
+    print("Sometimes a funny idea turns out to be a good idea.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="promptledger", description="Local prompt version control.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init", help="Initialize a PromptLedger database.")
+    subparsers.add_parser("enzo")
 
     add_parser = subparsers.add_parser("add", help="Add a new prompt version.")
     add_parser.add_argument("--id", required=True, dest="prompt_id")
@@ -67,11 +136,20 @@ def main(argv: list[str] | None = None) -> int:
     add_parser.add_argument("--author")
     add_parser.add_argument("--tags", help="Comma-separated tags")
     add_parser.add_argument("--env", choices=["dev", "staging", "prod"])
+    add_parser.add_argument("--collection")
+    add_parser.add_argument("--role", choices=BUILTIN_ROLES)
     add_parser.add_argument("--metrics", help="JSON metrics payload")
+    add_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Reuse metadata defaults from the latest version of the same prompt id.",
+    )
     add_parser.add_argument("--no-secret-warn", action="store_true", help="Disable secret warning")
 
     list_parser = subparsers.add_parser("list", help="List prompt versions.")
     list_parser.add_argument("--id", dest="prompt_id")
+    list_parser.add_argument("--collection")
+    list_parser.add_argument("--role", choices=BUILTIN_ROLES)
 
     show_parser = subparsers.add_parser("show", help="Show a prompt version.")
     show_parser.add_argument("--id", required=True, dest="prompt_id")
@@ -104,11 +182,13 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("--to", dest="to_version")
 
     search_parser = subparsers.add_parser("search", help="Search prompt content.")
-    search_parser.add_argument("--contains", required=True)
+    search_parser.add_argument("--contains", default="")
     search_parser.add_argument("--id", dest="prompt_id")
     search_parser.add_argument("--author")
     search_parser.add_argument("--tag")
     search_parser.add_argument("--env", choices=["dev", "staging", "prod"])
+    search_parser.add_argument("--collection")
+    search_parser.add_argument("--role", choices=BUILTIN_ROLES)
 
     label_parser = subparsers.add_parser("label", help="Manage labels.")
     label_sub = label_parser.add_subparsers(dest="label_command", required=True)
@@ -129,6 +209,33 @@ def main(argv: list[str] | None = None) -> int:
     label_history.add_argument("--name", dest="label")
     label_history.add_argument("--limit", type=int, default=200)
 
+    marker_parser = subparsers.add_parser("marker", help="Manage markers.")
+    marker_sub = marker_parser.add_subparsers(dest="marker_command", required=True)
+    marker_set = marker_sub.add_parser("set", help="Attach a marker to a version.")
+    marker_set.add_argument("--id", dest="prompt_id", required=True)
+    marker_set.add_argument("--version", type=int, required=True)
+    marker_set.add_argument("--name", required=True, choices=BUILTIN_MARKERS)
+
+    marker_remove = marker_sub.add_parser("remove", help="Remove a marker from a version.")
+    marker_remove.add_argument("--id", dest="prompt_id", required=True)
+    marker_remove.add_argument("--version", type=int, required=True)
+    marker_remove.add_argument("--name", required=True, choices=BUILTIN_MARKERS)
+
+    marker_list = marker_sub.add_parser("list", help="List markers for a prompt.")
+    marker_list.add_argument("--id", dest="prompt_id", required=True)
+
+    marker_show = marker_sub.add_parser("show", help="Show markers for a prompt version.")
+    marker_show.add_argument("--id", dest="prompt_id", required=True)
+    marker_show.add_argument("--version", type=int, required=True)
+
+    stable_parser = subparsers.add_parser("stable", help="Mark a version as stable.")
+    stable_parser.add_argument("--id", dest="prompt_id", required=True)
+    stable_parser.add_argument("--version", type=int)
+
+    milestone_parser = subparsers.add_parser("milestone", help="Mark a version as milestone.")
+    milestone_parser.add_argument("--id", dest="prompt_id", required=True)
+    milestone_parser.add_argument("--version", type=int)
+
     subparsers.add_parser("ui", help="Launch the Streamlit UI.")
 
     args = parser.parse_args(argv)
@@ -138,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             path = ledger.init()
             print(f"Initialized PromptLedger at {path}")
+        elif args.command == "enzo":
+            _print_enzo_easter_egg()
         elif args.command == "add":
             content = args.text
             if args.file:
@@ -155,16 +264,18 @@ def main(argv: list[str] | None = None) -> int:
             content = normalize_newlines(content)
             if not args.no_secret_warn and contains_secret(content):
                 print("Warning: possible secret detected in prompt content.", file=sys.stderr)
-            tags = _parse_tags(args.tags)
+            author, tags, env, collection, role = _resolve_add_metadata_defaults(ledger, args)
             metrics = _parse_metrics(args.metrics)
             try:
                 result = ledger.add(
                     prompt_id=args.prompt_id,
                     content=content,
                     reason=args.reason,
-                    author=args.author,
+                    author=author,
                     tags=tags,
-                    env=args.env,
+                    env=env,
+                    collection=collection,
+                    role=role,
                     metrics=metrics,
                     warn_on_secrets=False,
                 )
@@ -175,18 +286,30 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"No change detected for {args.prompt_id}")
         elif args.command == "list":
-            records = ledger.list(prompt_id=args.prompt_id)
+            records = ledger.list(
+                prompt_id=args.prompt_id,
+                collection=args.collection,
+                role=args.role,
+            )
+            marker_items = ledger.list_markers(prompt_id=args.prompt_id)
+            marker_map = _markers_by_prompt_version(marker_items)
             for record in records:
-                _print_record(record)
+                markers = marker_map.get((record.prompt_id, record.version), [])
+                _print_record_with_markers(record, markers)
         elif args.command == "show":
             record = ledger.get(args.prompt_id, args.version)
             if record is None:
                 return _error("Prompt version not found.", 2)
+            markers = ledger.get_markers(record.prompt_id, record.version)
             print(f"prompt_id: {record.prompt_id}")
             print(f"version: {record.version}")
             print(f"created_at: {_format_timestamp(record.created_at)}")
             if record.env:
                 print(f"env: {record.env}")
+            if record.collection:
+                print(f"collection: {record.collection}")
+            if record.role:
+                print(f"role: {record.role}")
             if record.tags:
                 print(f"tags: {', '.join(record.tags)}")
             if record.reason:
@@ -195,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"author: {record.author}")
             if record.metrics:
                 print(f"metrics: {json.dumps(record.metrics)}")
+            if markers:
+                print(f"markers: {', '.join(markers)}")
             print("\n" + record.content)
         elif args.command == "diff":
             try:
@@ -268,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
                 author=args.author,
                 tag=args.tag,
                 env=args.env,
+                collection=args.collection,
+                role=args.role,
             )
             if not records:
                 print("0 results")
@@ -324,6 +451,62 @@ def main(argv: list[str] | None = None) -> int:
                         )
             else:
                 return _error("Unknown label command.", 2)
+        elif args.command == "marker":
+            if args.marker_command == "set":
+                try:
+                    created = ledger.set_marker(args.prompt_id, args.version, args.name)
+                except ValueError as exc:
+                    return _error(str(exc), 2)
+                except Exception as exc:
+                    return _error(f"Failed to set marker: {exc}", 1)
+                action = "Set" if created else "Marker already set"
+                print(f"{action} marker {args.name} on {args.prompt_id}@{args.version}")
+            elif args.marker_command == "remove":
+                try:
+                    removed = ledger.remove_marker(args.prompt_id, args.version, args.name)
+                except ValueError as exc:
+                    return _error(str(exc), 2)
+                except Exception as exc:
+                    return _error(f"Failed to remove marker: {exc}", 1)
+                action = "Removed" if removed else "Marker not present"
+                print(f"{action} {args.name} on {args.prompt_id}@{args.version}")
+            elif args.marker_command == "list":
+                try:
+                    markers = ledger.list_markers(prompt_id=args.prompt_id)
+                except Exception as exc:
+                    return _error(f"Failed to list markers: {exc}", 1)
+                if not markers:
+                    print("0 results")
+                else:
+                    for item in markers:
+                        created = _format_timestamp(item["created_at"])
+                        print(
+                            f"{item['prompt_id']}\t{item['version']}\t{item['name']}\t{created}"
+                        )
+            elif args.marker_command == "show":
+                try:
+                    markers = ledger.get_markers(args.prompt_id, args.version)
+                except ValueError as exc:
+                    return _error(str(exc), 2)
+                except Exception as exc:
+                    return _error(f"Failed to show markers: {exc}", 1)
+                if not markers:
+                    print("0 results")
+                else:
+                    print(", ".join(markers))
+            else:
+                return _error("Unknown marker command.", 2)
+        elif args.command in {"stable", "milestone"}:
+            marker_name = args.command
+            try:
+                version = _resolve_target_version(ledger, args.prompt_id, args.version)
+                created = ledger.set_marker(args.prompt_id, version, marker_name)
+            except ValueError as exc:
+                return _error(str(exc), 2)
+            except Exception as exc:
+                return _error(f"Failed to set marker: {exc}", 1)
+            action = "Set" if created else "Marker already set"
+            print(f"{action} marker {marker_name} on {args.prompt_id}@{version}")
         elif args.command == "ui":
             launch_ui()
         else:

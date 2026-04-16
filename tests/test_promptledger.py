@@ -69,6 +69,53 @@ def test_version_incrementing(tmp_path):
     assert res2["version"] == 2
 
 
+def test_add_stores_collection_and_role(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+
+    ledger.add("alpha", "hello", collection="chunking-lab", role="system")
+
+    record = ledger.get("alpha", 1)
+    assert record is not None
+    assert record.collection == "chunking-lab"
+    assert record.role == "system"
+
+
+def test_add_supports_collection_only_and_role_only(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+
+    ledger.add("alpha", "one", collection="support-bot")
+    ledger.add("beta", "two", role="eval")
+
+    alpha = ledger.get("alpha", 1)
+    beta = ledger.get("beta", 1)
+    assert alpha is not None
+    assert alpha.collection == "support-bot"
+    assert alpha.role is None
+    assert beta is not None
+    assert beta.collection is None
+    assert beta.role == "eval"
+
+
+def test_collection_normalization_and_invalid_role(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+
+    ledger.add("trimmed", "one", collection="  chunking-lab  ")
+    ledger.add("empty", "two", collection="   ")
+
+    trimmed = ledger.get("trimmed", 1)
+    empty = ledger.get("empty", 1)
+    assert trimmed is not None
+    assert trimmed.collection == "chunking-lab"
+    assert empty is not None
+    assert empty.collection is None
+
+    with pytest.raises(ValueError):
+        ledger.add("bad", "three", role="assistant")
+
+
 def test_noop_hashing(tmp_path):
     ledger = PromptLedger(root=tmp_path)
     ledger.init()
@@ -131,8 +178,24 @@ def test_diff_modes(tmp_path, monkeypatch):
     ledger = PromptLedger()
     ledger.init()
 
-    ledger.add("modes", "line1\nline2", reason="first", tags=["a"], env="dev")
-    ledger.add("modes", "line1\nline3", reason="second", tags=["b"], env="prod")
+    ledger.add(
+        "modes",
+        "line1\nline2",
+        reason="first",
+        tags=["a"],
+        env="dev",
+        collection="chunking-lab",
+        role="system",
+    )
+    ledger.add(
+        "modes",
+        "line1\nline3",
+        reason="second",
+        tags=["b"],
+        env="prod",
+        collection="agent-routing",
+        role="eval",
+    )
 
     unified = ledger.diff("modes", 1, 2, mode="unified")
     assert unified
@@ -150,6 +213,31 @@ def test_diff_modes(tmp_path, monkeypatch):
     assert '+  "reason": "second"' in meta_text
     assert '-  "env": "dev"' in meta_text
     assert '+  "env": "prod"' in meta_text
+    assert '-  "collection": "chunking-lab"' in meta_text
+    assert '+  "collection": "agent-routing"' in meta_text
+    assert '-  "role": "system"' in meta_text
+    assert '+  "role": "eval"' in meta_text
+
+
+def test_list_and_search_filter_by_collection_and_role(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+
+    ledger.add("alpha", "Find me", collection="chunking-lab", role="system")
+    ledger.add("beta", "Find me too", collection="chunking-lab", role="eval")
+    ledger.add("gamma", "Find me three", collection="support-bot", role="system")
+
+    by_collection = ledger.list(collection="chunking-lab")
+    assert [record.prompt_id for record in by_collection] == ["beta", "alpha"]
+
+    by_role = ledger.list(role="system")
+    assert [record.prompt_id for record in by_role] == ["gamma", "alpha"]
+
+    combined = ledger.list(collection="chunking-lab", role="eval")
+    assert [record.prompt_id for record in combined] == ["beta"]
+
+    searched = ledger.search("", collection="chunking-lab", role="system")
+    assert [record.prompt_id for record in searched] == ["alpha"]
 
 
 def test_new_db_has_label_events(tmp_path, monkeypatch):
@@ -161,6 +249,68 @@ def test_new_db_has_label_events(tmp_path, monkeypatch):
     with sqlite3.connect(ledger.db_path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "label_events" in tables
+    assert "markers" in tables
+
+
+def test_marker_set_remove_and_duplicates(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+    ledger.add("demo", "one")
+    ledger.add("demo", "two")
+
+    created = ledger.set_marker("demo", 2, "stable")
+    duplicate = ledger.set_marker("demo", 2, "stable")
+
+    assert created is True
+    assert duplicate is False
+    assert ledger.get_markers("demo", 2) == ["stable"]
+
+    removed = ledger.remove_marker("demo", 2, "stable")
+    missing = ledger.remove_marker("demo", 2, "stable")
+
+    assert removed is True
+    assert missing is False
+    assert ledger.get_markers("demo", 2) == []
+
+
+def test_multiple_markers_and_multiple_stable_versions(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+    ledger.add("demo", "one")
+    ledger.add("demo", "two")
+    ledger.add("demo", "three")
+
+    ledger.set_marker("demo", 1, "stable")
+    ledger.set_marker("demo", 2, "stable")
+    ledger.set_marker("demo", 2, "milestone")
+
+    assert ledger.get_markers("demo", 1) == ["stable"]
+    assert ledger.get_markers("demo", 2) == ["milestone", "stable"]
+
+    markers = ledger.list_markers(prompt_id="demo")
+    assert [(item["version"], item["name"]) for item in markers] == [
+        (2, "milestone"),
+        (2, "stable"),
+        (1, "stable"),
+    ]
+
+
+def test_marker_api_errors(tmp_path):
+    ledger = PromptLedger(root=tmp_path)
+    ledger.init()
+    ledger.add("beta", "one")
+
+    with pytest.raises(ValueError):
+        ledger.set_marker("beta", 2, "stable")
+
+    with pytest.raises(ValueError):
+        ledger.set_marker("beta", 1, "invalid")
+
+    with pytest.raises(ValueError):
+        ledger.remove_marker("beta", 2, "stable")
+
+    with pytest.raises(ValueError):
+        ledger.get_markers("beta", 2)
 
 
 def test_label_events_ordering(tmp_path, monkeypatch):
@@ -319,7 +469,14 @@ def test_diff_ignores_newline_style(tmp_path):
 def test_export_formats(tmp_path):
     ledger = PromptLedger(root=tmp_path)
     ledger.init()
-    ledger.add("delta", "content", tags=["t1"], metrics={"score": 1})
+    ledger.add(
+        "delta",
+        "content",
+        tags=["t1"],
+        collection="chunking-lab",
+        role="template",
+        metrics={"score": 1},
+    )
 
     jsonl_path = tmp_path / "export.jsonl"
     csv_path = tmp_path / "export.csv"
@@ -331,6 +488,8 @@ def test_export_formats(tmp_path):
     assert csv_path.exists()
     assert "delta" in jsonl_path.read_text(encoding="utf-8")
     assert "delta" in csv_path.read_text(encoding="utf-8")
+    assert "chunking-lab" in jsonl_path.read_text(encoding="utf-8")
+    assert "template" in csv_path.read_text(encoding="utf-8")
 
 
 def test_export_deterministic(tmp_path):
@@ -385,6 +544,8 @@ def test_schema_migration(tmp_path):
         cols = {row[1] for row in conn.execute("PRAGMA table_info(prompt_versions)")}
         assert "env" in cols
         assert "metrics" in cols
+        assert "collection" in cols
+        assert "role" in cols
         label_cols = {row[1] for row in conn.execute("PRAGMA table_info(labels)")}
         assert "prompt_id" in label_cols
         assert "label" in label_cols
@@ -396,6 +557,11 @@ def test_schema_migration(tmp_path):
         assert "old_version" in label_event_cols
         assert "new_version" in label_event_cols
         assert "updated_at" in label_event_cols
+        marker_cols = {row[1] for row in conn.execute("PRAGMA table_info(markers)")}
+        assert "prompt_id" in marker_cols
+        assert "version" in marker_cols
+        assert "name" in marker_cols
+        assert "created_at" in marker_cols
         version = conn.execute("SELECT version FROM schema_migrations").fetchone()[0]
         assert version == db.CURRENT_SCHEMA_VERSION
 

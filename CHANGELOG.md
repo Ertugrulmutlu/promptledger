@@ -4,6 +4,35 @@ All notable changes to PromptLedger are documented in this file.
 
 This project follows Keep a Changelog and Semantic Versioning.
 
+## [0.6.0] - 2026-05-04
+
+### Added
+- Local workspace dashboard launched with `promptledger dashboard`
+- Static HTML/CSS/JavaScript dashboard served by a small local Python HTTP API
+- Prompt card workspace with search, metadata filters, draggable card ordering, and browser-local layout persistence
+- Detail modal with latest prompt text, metadata badges, labels, markers, version timeline, and side-by-side compare
+- Basic line-based visual diff in the dashboard compare view
+- Dashboard card action menu with open, copy prompt, copy CLI command, and marker actions
+- Local marker write API for dashboard actions:
+  - `POST /api/prompts/{prompt_id}/versions/{version}/markers/{marker_name}`
+  - `DELETE /api/prompts/{prompt_id}/versions/{version}/markers/{marker_name}`
+- Dashboard marker toggles for `stable` and `milestone` using the existing PromptLedger marker system
+- Read-only dashboard API endpoints for prompts, versions, search, and stats
+- `--host`, `--port`, and `--no-open` options for the dashboard command
+- Prompt metadata grouping with `collection` and built-in `role`
+- Marker shortcuts: `promptledger stable` and `promptledger milestone`
+- `promptledger add --quick` for reusing safe metadata from the latest prompt version
+
+### Changed
+- `promptledger ui` is now the legacy Streamlit viewer; `promptledger dashboard` is the primary local UI
+- Dashboard package data is included in distributions so static assets ship with the wheel
+- README now documents the workspace dashboard, local-only behavior, and browser-local layout state
+
+### Fixed
+- Dashboard marker filter results refresh after marker changes
+- Dashboard handles empty prompt/search states intentionally
+- Version timeline is scrollable for prompts with many versions
+
 ## [0.2.0] - 2026-01-13
 
 ### Added

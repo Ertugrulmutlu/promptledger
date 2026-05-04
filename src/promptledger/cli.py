@@ -16,6 +16,7 @@ from .core import (
     normalize_collection,
     normalize_newlines,
 )
+from .dashboard import launch_dashboard
 from .render import render_review_text
 from .ui import launch_ui
 
@@ -236,7 +237,16 @@ def main(argv: list[str] | None = None) -> int:
     milestone_parser.add_argument("--id", dest="prompt_id", required=True)
     milestone_parser.add_argument("--version", type=int)
 
-    subparsers.add_parser("ui", help="Launch the Streamlit UI.")
+    dashboard_parser = subparsers.add_parser("dashboard", help="Launch the local read-only dashboard.")
+    dashboard_parser.add_argument("--host", default="127.0.0.1")
+    dashboard_parser.add_argument("--port", type=int, default=8765)
+    dashboard_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open the dashboard in a browser automatically.",
+    )
+
+    subparsers.add_parser("ui", help="Launch the legacy Streamlit UI.")
 
     args = parser.parse_args(argv)
     ledger = PromptLedger()
@@ -508,7 +518,10 @@ def main(argv: list[str] | None = None) -> int:
             action = "Set" if created else "Marker already set"
             print(f"{action} marker {marker_name} on {args.prompt_id}@{version}")
         elif args.command == "ui":
+            print("Warning: `promptledger ui` is deprecated; use `promptledger dashboard`.", file=sys.stderr)
             launch_ui()
+        elif args.command == "dashboard":
+            launch_dashboard(host=args.host, port=args.port, open_browser=not args.no_open)
         else:
             return _error("Unknown command.", 2)
     except RuntimeError as exc:

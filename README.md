@@ -403,30 +403,7 @@ Do not store API keys or secrets in prompt text. Use `--no-secret-warn` to suppr
 pytest
 ```
 
-## Release
-
-For maintainers preparing a PyPI and GitHub release:
-
-```bash
-pytest
-python -m build
-python -m twine check dist/*
-```
-
-Publish to PyPI after verifying the artifacts:
-
-```bash
-python -m twine upload dist/*
-```
-
-Suggested GitHub release title:
-
-```text
-PromptLedger v0.6.0 - Local prompt workspace dashboard
-```
-
 ## Legacy UI note
 
 * `promptledger ui` still launches the old Streamlit viewer when `promptledger[ui]` is installed.
 * The Streamlit viewer is deprecated in favor of `promptledger dashboard`.
-* Screenshot/GIF placeholder: add a comparison view capture here later if you want visuals in the docs.

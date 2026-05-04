@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PromptLedger Workspace</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div>
+            <h1>PromptLedger</h1>
+            <p>Local prompt workspace</p>
+          </div>
+          <span id="version-count" class="count">0</span>
+        </div>
+
+        <div class="search-wrap sidebar-search">
+          <span class="search-icon">/</span>
+          <input id="search" type="search" placeholder="Search prompt text">
+        </div>
+
+        <div class="filters">
+          <div class="section-label">Filters</div>
+          <select id="collection-filter"><option value="">All collections</option></select>
+          <select id="role-filter"><option value="">All roles</option></select>
+          <select id="env-filter"><option value="">All envs</option></select>
+          <select id="marker-filter"><option value="">All markers</option></select>
+        </div>
+
+        <button id="reset-layout-side" class="ghost-button" type="button">Reset layout</button>
+        <p class="sidebar-note">Prompt history is read-only here. Card layout is saved in this browser.</p>
+      </aside>
+
+      <main class="content">
+        <section class="topbar">
+          <div>
+            <div class="eyebrow">Workspace</div>
+            <h2>Your prompt workspace</h2>
+            <p>Organize prompt artifacts locally, then open cards for history and compare.</p>
+          </div>
+          <div id="stats" class="stats"></div>
+        </section>
+
+        <section class="workspace-toolbar panel">
+          <div>
+            <strong id="card-count">0 cards</strong>
+            <span>Drag cards to arrange this workspace.</span>
+          </div>
+          <div class="toolbar-actions">
+            <button id="compare-selected" class="ghost-button is-hidden" type="button">Compare selected</button>
+            <select id="sort-mode" aria-label="Sort cards">
+              <option value="layout">Saved layout</option>
+              <option value="updated">Latest updated</option>
+              <option value="id">Prompt id</option>
+              <option value="collection">Collection</option>
+            </select>
+          </div>
+        </section>
+
+        <section id="workspace-board" class="workspace-board" aria-label="Prompt cards"></section>
+        <section id="workspace-empty" class="empty-state is-hidden">
+          <div class="empty-icon">PL</div>
+          <h2>No prompt cards found</h2>
+          <p>Adjust search or filters, or add prompt versions with the CLI.</p>
+        </section>
+      </main>
+    </div>
+
+    <div id="detail-modal" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="detail-modal">
+        <button id="modal-close" class="modal-close" type="button" aria-label="Close detail view">&times;</button>
+        <div class="modal-hero">
+          <div>
+            <div class="eyebrow">Prompt Artifact</div>
+            <h2 id="modal-title">Prompt</h2>
+            <div id="modal-meta" class="selected-meta"></div>
+          </div>
+          <div class="modal-actions">
+            <button id="copy-prompt" class="ghost-button" type="button">Copy latest prompt</button>
+            <button id="copy-command" class="ghost-button" type="button">Copy add --quick command</button>
+          </div>
+        </div>
+
+        <div id="modal-badges" class="badges"></div>
+
+        <div class="modal-grid">
+          <section class="code-card">
+            <div class="code-card-head">
+              <div>
+                <strong id="code-title">Prompt text</strong>
+                <span id="prompt-subtitle">Latest version</span>
+              </div>
+              <div id="code-badges" class="badges"></div>
+            </div>
+            <pre id="prompt-content" class="prompt-content"></pre>
+          </section>
+
+          <section class="panel timeline-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Versions</h2>
+                <p id="timeline-subtitle">Newest first</p>
+              </div>
+            </div>
+            <div id="timeline" class="timeline"></div>
+          </section>
+        </div>
+
+        <section class="panel compare-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Compare</h2>
+              <p>Side-by-side version comparison</p>
+            </div>
+            <div class="compare-controls">
+              <select id="compare-left"></select>
+              <select id="compare-right"></select>
+            </div>
+          </div>
+          <div class="compare-grid">
+            <div class="compare-side">
+              <div class="compare-side-head">
+                <strong id="compare-left-label">Left</strong>
+                <span>Baseline</span>
+              </div>
+              <div id="compare-left-text" class="diff-block"></div>
+            </div>
+            <div class="compare-side">
+              <div class="compare-side-head">
+                <strong id="compare-right-label">Right</strong>
+                <span>Selected</span>
+              </div>
+              <div id="compare-right-text" class="diff-block"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div id="toast" class="toast is-hidden" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

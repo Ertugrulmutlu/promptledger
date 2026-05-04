@@ -1,21 +1,20 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "promptledger"
-version = "0.4.0"
-description = "Local-first prompt version control and review for developers"
+version = "0.6.0"
+description = "Local-first prompt version control, review, and workspace dashboard for developers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "PromptLedger Contributors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
 
@@ -24,6 +23,7 @@ dependencies = []
 [project.optional-dependencies]
 ui = ["streamlit>=1.30"]
 test = ["pytest"]
+dev = ["build", "pytest", "twine"]
 
 [project.scripts]
 promptledger = "promptledger.cli:main"
@@ -40,6 +40,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+promptledger = ["dashboard/static/*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

@@ -9,9 +9,9 @@
 
 # PromptLedger
 
-PromptLedger is a **local-first prompt version control system** for developers. It treats prompts like code: every change is versioned, diffable, labeled, and marked — all stored locally in a single SQLite database.
+PromptLedger is a **local-first prompt version control system** for developers. It treats prompts like code: every change is versioned, diffable, labeled, and marked, all stored locally in a single SQLite database.
 
-It ships with a small CLI, a Python API, and a **read-only Streamlit viewer**. There are no backend services, no SaaS, and no telemetry.
+It ships with a small CLI, a Python API, and a **read-only local dashboard**. There are no backend services, no SaaS, and no telemetry.
 
 ---
 
@@ -25,7 +25,7 @@ It ships with a small CLI, a Python API, and a **read-only Streamlit viewer**. T
 * Marker support for version-attached annotations such as `stable` and `milestone`
 * Deterministic exports for history and review artifacts
 * CLI and Python API for add / get / list / diff / review / export workflows
-* A read-only Streamlit UI with timeline, filtering, visible markers, review, diff, and side-by-side comparison
+* A read-only local workspace dashboard with draggable prompt cards, search, filters, visible labels and markers, version timeline, prompt inspection, and side-by-side comparison
 * Newline normalization to avoid CRLF/LF noise
 
 ## What it is NOT
@@ -51,11 +51,15 @@ Tested on Windows, macOS, and Linux via CI.
 
 ```bash
 pip install promptledger
-pip install "promptledger[ui]"
 ```
 
-* The first command installs the core CLI and Python API.
-* The second command installs optional Streamlit UI support.
+The core install includes the CLI, Python API, and local read-only dashboard.
+
+Legacy Streamlit support remains available as an optional extra:
+
+```bash
+pip install "promptledger[ui]"
+```
 
 ## Quickstart
 
@@ -107,7 +111,8 @@ promptledger stable --id onboarding
 promptledger milestone --id onboarding --version 1
 
 promptledger status
-promptledger ui
+promptledger dashboard
+promptledger dashboard --port 8765
 ```
 
 Notes:
@@ -124,7 +129,23 @@ Notes:
 * `promptledger list` supports `--collection` and `--role` filters.
 * `promptledger search` supports `--collection` and `--role` filters, and may be used as a metadata-only search when `--contains` is omitted.
 * `promptledger stable --id <prompt_id>` and `promptledger milestone --id <prompt_id>` apply markers to the latest version when `--version` is omitted.
-* `promptledger ui` launches a read-only Streamlit UI.
+* `promptledger dashboard` launches the local read-only dashboard at `http://127.0.0.1:8765/`.
+* `promptledger dashboard --host 127.0.0.1 --port 8765` overrides the bind address.
+* `promptledger dashboard --no-open` prints the URL without opening a browser.
+* `promptledger ui` is the legacy deprecated Streamlit viewer.
+
+### Dashboard
+
+The dashboard is a local prompt workspace for reviewing PromptLedger history. It starts a small local web server, serves static HTML/CSS/JavaScript, and reads only from the existing SQLite database.
+
+```bash
+promptledger dashboard
+promptledger dashboard --port 8765
+```
+
+The first screen shows prompt cards in a draggable workspace board. Click a card to open prompt text, metadata, version history, labels, markers, and side-by-side compare. Card layout is saved only in browser `localStorage`.
+
+The CLI remains the source of prompt-history write operations. The dashboard does not add auth, telemetry, cloud services, hosted backend behavior, or prompt editing. The dashboard can update local marker metadata (`stable` and `milestone`) through the same PromptLedger marker system used by the CLI.
 
 ### Python API
 
@@ -382,8 +403,30 @@ Do not store API keys or secrets in prompt text. Use `--no-secret-warn` to suppr
 pytest
 ```
 
-## Optional UI note
+## Release
 
-* The Streamlit viewer includes a read-only review panel for semantic summary, metadata changes, warnings, marker visibility, and side-by-side comparison.
-* The viewer surfaces `collection` and `role` in the existing version metadata areas, and shows them in the timeline/details without adding a separate library-management UI.
+For maintainers preparing a PyPI and GitHub release:
+
+```bash
+pytest
+python -m build
+python -m twine check dist/*
+```
+
+Publish to PyPI after verifying the artifacts:
+
+```bash
+python -m twine upload dist/*
+```
+
+Suggested GitHub release title:
+
+```text
+PromptLedger v0.6.0 - Local prompt workspace dashboard
+```
+
+## Legacy UI note
+
+* `promptledger ui` still launches the old Streamlit viewer when `promptledger[ui]` is installed.
+* The Streamlit viewer is deprecated in favor of `promptledger dashboard`.
 * Screenshot/GIF placeholder: add a comparison view capture here later if you want visuals in the docs.

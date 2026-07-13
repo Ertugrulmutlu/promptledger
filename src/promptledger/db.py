@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 def _git_root_via_cli(start: Path) -> Path | None:
@@ -176,6 +176,36 @@ def _create_markers_table(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_markers_prompt_version ON markers(prompt_id, version)")
 
 
+def _create_evaluation_runs_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            suite TEXT NOT NULL,
+            model TEXT,
+            dataset_hash TEXT,
+            metrics TEXT NOT NULL,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (prompt_id, version)
+                REFERENCES prompt_versions(prompt_id, version)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evaluation_runs_prompt_version "
+        "ON evaluation_runs(prompt_id, version)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_runs_suite ON evaluation_runs(suite)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_runs_model ON evaluation_runs(model)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evaluation_runs_created "
+        "ON evaluation_runs(created_at, id)"
+    )
+
+
 def _migrate_0_to_1(conn: sqlite3.Connection) -> None:
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(prompt_versions)")}
     if "env" not in existing_cols:
@@ -202,6 +232,10 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE prompt_versions ADD COLUMN role TEXT")
 
 
+def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
+    _create_evaluation_runs_table(conn)
+
+
 def apply_migrations(conn: sqlite3.Connection) -> None:
     version = _get_schema_version(conn)
     if not _table_exists(conn, "prompt_versions"):
@@ -209,6 +243,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         _create_labels_table(conn)
         _create_label_events_table(conn)
         _create_markers_table(conn)
+        _create_evaluation_runs_table(conn)
         _set_schema_version(conn, CURRENT_SCHEMA_VERSION)
         return
 
@@ -235,6 +270,11 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     if version < 5:
         _migrate_4_to_5(conn)
         _set_schema_version(conn, 5)
+        version = 5
+
+    if version < 6:
+        _migrate_5_to_6(conn)
+        _set_schema_version(conn, 6)
 
 
 def init_db(db_path: Path) -> None:

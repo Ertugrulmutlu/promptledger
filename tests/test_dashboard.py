@@ -2,7 +2,10 @@ import json
 from http.server import ThreadingHTTPServer
 from threading import Thread
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+import pytest
 
 from promptledger.cli import main
 from promptledger.core import PromptLedger
@@ -41,6 +44,8 @@ def _seed_dashboard_ledger(tmp_path):
     )
     ledger.set_label("alpha", 2, "prod")
     ledger.set_marker("alpha", 2, "stable")
+    ledger.record_evaluation("alpha", 1, "support", {"accuracy": 0.8}, model="m")
+    ledger.record_evaluation("alpha", 2, "support", {"accuracy": 0.9}, model="m")
     return ledger
 
 
@@ -62,6 +67,11 @@ def test_dashboard_prompt_endpoints_return_expected_shapes(tmp_path):
     assert version["content"] == "System prompt two with guardrails"
     assert version["labels"] == ["prod"]
     assert version["markers"] == ["stable"]
+    assert version["evaluation_status"] == "EVALUATED"
+    assert version["evaluations"][0]["suite"] == "support"
+    beta = api.get_version(ledger, "beta", 1)
+    assert beta["evaluation_status"] == "NO EVAL DATA"
+    assert beta["evaluations"] == []
 
 
 def test_dashboard_search_filters_by_metadata_marker_and_label(tmp_path):
@@ -177,6 +187,77 @@ def test_dashboard_marker_update_reflected_in_filter(tmp_path):
         assert after["count"] == 1
         assert after["results"][0]["prompt_id"] == "beta"
         assert after["results"][0]["markers"] == ["milestone"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_dashboard_evaluation_helpers_and_compare(tmp_path):
+    ledger = _seed_dashboard_ledger(tmp_path)
+    listed = api.list_evaluations(ledger, prompt_id="alpha")
+    version_runs = api.list_evaluations(ledger, prompt_id="alpha", ref=2)
+    compared = api.compare_evaluations(ledger, "alpha", 1, 2)
+    combined = api.compare_versions(ledger, "alpha", 1, 2)
+    assert listed["count"] == 2
+    assert version_runs["count"] == 1
+    assert compared["metrics"][0]["delta"] == pytest.approx(0.1)
+    assert combined["evaluation"]["suite"] == "support"
+    assert combined["diff"]["opcodes"][0]["type"] == "replaced"
+
+
+@pytest.mark.parametrize(
+    "left,right,types",
+    [
+        ("a\nb", "a\nx\nb", ["equal", "added", "equal"]),
+        ("a\nx\nb", "a\nb", ["equal", "removed", "equal"]),
+        ("a\nb", "a\nc", ["equal", "replaced"]),
+        ("a\nb", "a\nb", ["equal"]),
+        ("a\r\nb\r\n", "a\nb\n", ["equal"]),
+    ],
+)
+def test_structured_sequence_diff(left, right, types):
+    result = api.structured_diff(left, right)
+    assert [opcode["type"] for opcode in result["opcodes"]] == types
+    assert all(len(opcode["left"]) == len(opcode["right"]) for opcode in result["opcodes"])
+
+
+def test_dashboard_evaluation_http_endpoints_and_validation(tmp_path):
+    ledger = _seed_dashboard_ledger(tmp_path)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(ledger))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        listed = _request_json(base_url, "/api/evaluations?id=alpha")
+        shown = _request_json(base_url, f"/api/evaluations/{listed['evaluations'][0]['id']}")
+        version = _request_json(base_url, "/api/prompts/alpha/versions/2/evaluations")
+        compared = _request_json(
+            base_url, "/api/prompts/alpha/evaluation-compare?from=1&to=2"
+        )
+        diff = _request_json(base_url, "/api/prompts/alpha/compare?from=1&to=2")
+        policy = quote(json.dumps({"suite": "support", "model": "m", "metrics": {
+            "accuracy": {"direction": "higher", "max_regression": 0}
+        }}))
+        gated = _request_json(
+            base_url, f"/api/prompts/alpha/evaluation-gate?from=1&to=2&policy={policy}"
+        )
+        assert listed["count"] == 2
+        assert shown["prompt_id"] == "alpha"
+        assert version["count"] == 1
+        assert compared["common_metrics"] == ["accuracy"]
+        assert diff["diff"]["opcodes"]
+        assert gated["passed"] is True
+
+        for path in [
+            "/api/evaluations/invalid",
+            "/api/evaluations?limit=0",
+            "/api/prompts/alpha/evaluation-compare?from=1",
+            "/api/prompts/alpha/evaluation-compare?from=1&to=missing",
+            "/api/prompts/alpha/versions/99/evaluations",
+        ]:
+            with pytest.raises(HTTPError) as error:
+                _request_json(base_url, path)
+            assert error.value.code in {400, 404}
     finally:
         server.shutdown()
         server.server_close()

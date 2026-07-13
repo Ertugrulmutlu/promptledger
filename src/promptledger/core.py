@@ -13,6 +13,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import db
+from .evaluation import (
+    EvaluationComparison,
+    EvaluationRun,
+    GateResult,
+    compare_runs,
+    evaluate_comparison_gate,
+    parse_gate_policy,
+    validate_metadata,
+    validate_metrics,
+)
 from .render import export_review_markdown as render_review_markdown
 from .review import MetadataChange, ReviewRef, ReviewResult, ReviewWarning, summarize_semantic_changes
 
@@ -652,6 +662,176 @@ class PromptLedger:
     def export_review_markdown(self, prompt_id: str, from_ref: int | str, to_ref: int | str) -> str:
         return render_review_markdown(self.review(prompt_id, from_ref, to_ref))
 
+    def record_evaluation(
+        self,
+        prompt_id: str,
+        ref: int | str,
+        suite: str,
+        metrics: dict[str, Any],
+        model: str | None = None,
+        dataset_hash: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> EvaluationRun:
+        resolved = self.resolve_ref(prompt_id, ref)
+        if self.get(prompt_id, resolved.resolved_version) is None:
+            raise ValueError("Prompt version not found.")
+        suite = suite.strip() if isinstance(suite, str) else ""
+        if not suite:
+            raise ValueError("Evaluation suite must be a non-empty string.")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("Evaluation model must be a string when provided.")
+        if dataset_hash is not None and not isinstance(dataset_hash, str):
+            raise ValueError("Evaluation dataset hash must be a string when provided.")
+        model = model.strip() if isinstance(model, str) else model
+        dataset_hash = dataset_hash.strip() if isinstance(dataset_hash, str) else dataset_hash
+        if model == "":
+            model = None
+        if dataset_hash == "":
+            dataset_hash = None
+        validated_metrics = validate_metrics(metrics)
+        validated_metadata = validate_metadata(metadata)
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        metrics_json = json.dumps(
+            validated_metrics, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        metadata_json = (
+            json.dumps(
+                validated_metadata, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+            if validated_metadata is not None
+            else None
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO evaluation_runs (
+                    prompt_id, version, suite, model, dataset_hash, metrics, metadata, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prompt_id, resolved.resolved_version, suite, model, dataset_hash,
+                    metrics_json, metadata_json, created_at,
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+            conn.commit()
+        run = self.get_evaluation(run_id)
+        if run is None:  # pragma: no cover - SQLite insert invariant
+            raise RuntimeError("Evaluation run could not be read after insertion.")
+        return run
+
+    def get_evaluation(self, run_id: int) -> EvaluationRun | None:
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1:
+            raise ValueError("Evaluation run ID must be a positive integer.")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, prompt_id, version, suite, model, dataset_hash,
+                       metrics, metadata, created_at
+                FROM evaluation_runs WHERE id = ? LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        return self._row_to_evaluation(row) if row else None
+
+    def list_evaluations(
+        self,
+        prompt_id: str | None = None,
+        ref: int | str | None = None,
+        suite: str | None = None,
+        model: str | None = None,
+        limit: int = 200,
+    ) -> list[EvaluationRun]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("Evaluation limit must be a positive integer.")
+        filters = []
+        params: list[Any] = []
+        if prompt_id:
+            filters.append("prompt_id = ?")
+            params.append(prompt_id)
+        if ref is not None:
+            if not prompt_id:
+                raise ValueError("A prompt ID is required when filtering by ref.")
+            resolved = self.resolve_ref(prompt_id, ref)
+            if self.get(prompt_id, resolved.resolved_version) is None:
+                raise ValueError("Prompt version not found.")
+            filters.append("version = ?")
+            params.append(resolved.resolved_version)
+        if suite is not None:
+            filters.append("suite = ?")
+            params.append(suite)
+        if model is not None:
+            filters.append("model = ?")
+            params.append(model)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, prompt_id, version, suite, model, dataset_hash,
+                       metrics, metadata, created_at
+                FROM evaluation_runs
+                {where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_evaluation(row) for row in rows]
+
+    def compare_evaluations(
+        self,
+        prompt_id: str,
+        from_ref: int | str,
+        to_ref: int | str,
+        suite: str | None = None,
+        model: str | None = None,
+    ) -> EvaluationComparison:
+        left_ref = self.resolve_ref(prompt_id, from_ref)
+        right_ref = self.resolve_ref(prompt_id, to_ref)
+        for resolved in (left_ref, right_ref):
+            if self.get(prompt_id, resolved.resolved_version) is None:
+                raise ValueError("Prompt version not found.")
+        baseline = self._latest_evaluation(
+            prompt_id, left_ref.resolved_version, suite=suite, model=model,
+            match_model=model is not None,
+        )
+        if baseline is None:
+            raise ValueError("No matching evaluation run found for the baseline ref.")
+        selected_suite = suite or baseline.suite
+        selected_model = model if model is not None else baseline.model
+        candidate = self._latest_evaluation(
+            prompt_id, right_ref.resolved_version, suite=selected_suite,
+            model=selected_model, match_model=True,
+        )
+        if candidate is None:
+            raise ValueError("No compatible evaluation run found for the candidate ref.")
+        return compare_runs(
+            prompt_id, left_ref.to_dict(), right_ref.to_dict(), baseline, candidate
+        )
+
+    def evaluate_gate(
+        self,
+        prompt_id: str,
+        from_ref: int | str,
+        to_ref: int | str,
+        policy: dict[str, Any],
+    ) -> GateResult:
+        suite, model, rules = parse_gate_policy(policy)
+        comparison = self.compare_evaluations(
+            prompt_id, from_ref, to_ref, suite=suite, model=model
+        )
+        return evaluate_comparison_gate(comparison, rules)
+
+    def export_evaluations(
+        self, out_path: str | Path, prompt_id: str | None = None
+    ) -> Path:
+        path = Path(out_path)
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            for run in self.list_evaluations(prompt_id=prompt_id, limit=2_147_483_647):
+                handle.write(json.dumps(run.to_dict(), sort_keys=True, separators=(",", ":")) + "\n")
+        return path
+
     def export(self, format: str, out_path: str | Path) -> Path:
         format = format.lower()
         records = self.list()
@@ -705,6 +885,52 @@ class PromptLedger:
             metrics=metrics,
             created_at=row["created_at"],
         )
+
+    def _row_to_evaluation(self, row) -> EvaluationRun:
+        try:
+            metrics = json.loads(row["metrics"])
+            metadata = json.loads(row["metadata"]) if row["metadata"] is not None else None
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"Evaluation run {row['id']} contains malformed JSON: {exc}.") from exc
+        return EvaluationRun(
+            id=int(row["id"]), prompt_id=str(row["prompt_id"]), version=int(row["version"]),
+            suite=str(row["suite"]), model=row["model"], dataset_hash=row["dataset_hash"],
+            metrics=validate_metrics(metrics), metadata=validate_metadata(metadata),
+            created_at=str(row["created_at"]),
+        )
+
+    def _latest_evaluation(
+        self,
+        prompt_id: str,
+        version: int,
+        suite: str | None,
+        model: str | None,
+        match_model: bool,
+    ) -> EvaluationRun | None:
+        filters = ["prompt_id = ?", "version = ?"]
+        params: list[Any] = [prompt_id, version]
+        if suite is not None:
+            filters.append("suite = ?")
+            params.append(suite)
+        if match_model:
+            if model is None:
+                filters.append("model IS NULL")
+            else:
+                filters.append("model = ?")
+                params.append(model)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT id, prompt_id, version, suite, model, dataset_hash,
+                       metrics, metadata, created_at
+                FROM evaluation_runs
+                WHERE {' AND '.join(filters)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return self._row_to_evaluation(row) if row else None
 
     def resolve_ref(self, prompt_id: str, ref: int | str) -> ReviewRef:
         if isinstance(ref, int):

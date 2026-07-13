@@ -562,6 +562,13 @@ def test_schema_migration(tmp_path):
         assert "version" in marker_cols
         assert "name" in marker_cols
         assert "created_at" in marker_cols
+        evaluation_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(evaluation_runs)")
+        }
+        assert evaluation_cols == {
+            "id", "prompt_id", "version", "suite", "model", "dataset_hash",
+            "metrics", "metadata", "created_at",
+        }
         version = conn.execute("SELECT version FROM schema_migrations").fetchone()[0]
         assert version == db.CURRENT_SCHEMA_VERSION
 

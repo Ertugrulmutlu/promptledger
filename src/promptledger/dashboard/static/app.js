@@ -256,6 +256,7 @@ function renderBoard() {
     [
       prompt.env && prompt.env,
       prompt.role,
+      prompt.evaluation_status,
       ...prompt.tags.slice(0, 3),
       ...prompt.markers,
     ].filter(Boolean).forEach((item) => meta.append(badge(item)));
@@ -432,6 +433,51 @@ function renderSelectedVersion(version) {
     version.role,
     ...version.markers,
   ]);
+  renderEvaluations(version.evaluations || []);
+}
+
+function renderEvaluations(runs) {
+  const target = el("evaluation-history");
+  target.innerHTML = "";
+  el("evaluation-subtitle").textContent = runs.length
+    ? `${runs.length} run${runs.length === 1 ? "" : "s"}, newest first`
+    : "No evaluation data for this version";
+  if (!runs.length) {
+    const empty = document.createElement("p");
+    empty.className = "evaluation-empty";
+    empty.textContent = "Record externally produced benchmark metrics with promptledger eval record.";
+    target.append(empty);
+    return;
+  }
+  runs.forEach((run) => {
+    const item = document.createElement("article");
+    item.className = "evaluation-run";
+    const head = document.createElement("div");
+    head.className = "evaluation-run-head";
+    const title = document.createElement("strong");
+    title.textContent = `${run.suite} · run ${run.id}`;
+    const time = document.createElement("span");
+    time.textContent = formatDate(run.created_at);
+    head.append(title, time);
+    item.append(head);
+    appendBadges(item.appendChild(document.createElement("div")), [
+      run.model && `model: ${run.model}`,
+      run.dataset_hash && `dataset: ${run.dataset_hash}`,
+    ]);
+    const table = document.createElement("table");
+    Object.keys(run.metrics).sort().forEach((name) => {
+      const row = table.insertRow();
+      row.insertCell().textContent = name;
+      row.insertCell().textContent = String(run.metrics[name]);
+    });
+    item.append(table);
+    if (run.metadata && Object.keys(run.metadata).length) {
+      const metadata = document.createElement("pre");
+      metadata.textContent = JSON.stringify(run.metadata, null, 2);
+      item.append(metadata);
+    }
+    target.append(item);
+  });
 }
 
 function renderTimeline() {
@@ -515,28 +561,12 @@ function updateCompareOptions() {
   renderCompare();
 }
 
-function diffLines(leftText, rightText) {
-  const leftLines = leftText.split("\n");
-  const rightLines = rightText.split("\n");
-  const max = Math.max(leftLines.length, rightLines.length);
-  const left = [];
-  const right = [];
-  for (let index = 0; index < max; index += 1) {
-    const leftLine = leftLines[index] ?? "";
-    const rightLine = rightLines[index] ?? "";
-    const changed = leftLine !== rightLine;
-    left.push({ text: leftLine, type: changed ? "removed" : "neutral" });
-    right.push({ text: rightLine, type: changed ? "added" : "neutral" });
-  }
-  return { left, right };
-}
-
-function renderDiffLine(target, item, index) {
+function renderDiffLine(target, item) {
   const row = document.createElement("div");
   row.className = `diff-line diff-${item.type}`;
   const number = document.createElement("span");
   number.className = "diff-number";
-  number.textContent = index + 1;
+  number.textContent = item.number || "";
   const text = document.createElement("span");
   text.className = "diff-text";
   text.textContent = item.text || " ";
@@ -544,16 +574,48 @@ function renderDiffLine(target, item, index) {
   target.append(row);
 }
 
-function renderDirectCompare(left, right) {
+function renderStructuredCompare(left, right, diff, evaluation = null) {
   el("compare-left-label").textContent = `${left.prompt_id}@v${left.version}`;
   el("compare-right-label").textContent = `${right.prompt_id}@v${right.version}`;
-  const diff = diffLines(left.content || "", right.content || "");
   const leftTarget = el("compare-left-text");
   const rightTarget = el("compare-right-text");
   leftTarget.innerHTML = "";
   rightTarget.innerHTML = "";
-  diff.left.forEach((item, index) => renderDiffLine(leftTarget, item, index));
-  diff.right.forEach((item, index) => renderDiffLine(rightTarget, item, index));
+  diff.opcodes.forEach((opcode) => {
+    opcode.left.forEach((item) => renderDiffLine(leftTarget, item));
+    opcode.right.forEach((item) => renderDiffLine(rightTarget, item));
+  });
+  renderEvaluationComparison(evaluation);
+}
+
+function renderEvaluationComparison(comparison) {
+  const target = el("evaluation-comparison");
+  target.innerHTML = "";
+  if (!comparison) {
+    target.textContent = "No compatible evaluation runs for these versions.";
+    return;
+  }
+  const heading = document.createElement("strong");
+  heading.textContent = `Evaluation deltas · ${comparison.suite} · ${comparison.model || "no model"}`;
+  target.append(heading);
+  const table = document.createElement("table");
+  const header = table.insertRow();
+  ["Metric", "Baseline", "Candidate", "Delta", "Delta %"].forEach((text) => {
+    header.appendChild(document.createElement("th")).textContent = text;
+  });
+  comparison.metrics.forEach((metric) => {
+    const row = table.insertRow();
+    [metric.metric, metric.baseline, metric.candidate, metric.delta,
+      metric.delta_percent == null ? "n/a" : `${metric.delta_percent.toFixed(2)}%`]
+      .forEach((value) => { row.insertCell().textContent = String(value); });
+  });
+  target.append(table);
+}
+
+function directDisplayDiff(left, right) {
+  const makeLines = (text, type) => (text || "").replace(/\r\n?/g, "\n").split("\n")
+    .map((line, index) => ({ number: index + 1, text: line, type }));
+  return { opcodes: [{ type: "replaced", left: makeLines(left.content, "replaced"), right: makeLines(right.content, "replaced") }] };
 }
 
 async function renderCompare() {
@@ -561,9 +623,12 @@ async function renderCompare() {
   const leftValue = el("compare-left").value;
   const rightValue = el("compare-right").value;
   if (!leftValue || !rightValue) return;
-  const left = await loadVersion(Number(leftValue));
-  const right = await loadVersion(Number(rightValue));
-  renderDirectCompare(left, right);
+  const [left, right, comparison] = await Promise.all([
+    loadVersion(Number(leftValue)),
+    loadVersion(Number(rightValue)),
+    getJson(`/api/prompts/${encodeURIComponent(state.selectedPrompt)}/compare?from=${encodeURIComponent(leftValue)}&to=${encodeURIComponent(rightValue)}`),
+  ]);
+  renderStructuredCompare(left, right, comparison.diff, comparison.evaluation);
 }
 
 async function openSelectedCompare() {
@@ -589,7 +654,7 @@ async function openSelectedCompare() {
   el("compare-right").innerHTML = `<option>${right.prompt_id}@v${right.version}</option>`;
   refreshCustomSelect(el("compare-left"));
   refreshCustomSelect(el("compare-right"));
-  renderDirectCompare(left, right);
+  renderStructuredCompare(left, right, directDisplayDiff(left, right));
 }
 
 async function applyFilters() {

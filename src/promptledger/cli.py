@@ -114,6 +114,65 @@ def _error(message: str, code: int) -> int:
     return code
 
 
+def _read_json_object(path: Path, description: str) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"Failed to read {description} file: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid {description} JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{description.capitalize()} must be a JSON object.")
+    return value
+
+
+def _parse_json_object(value: str | None, description: str) -> dict | None:
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid {description} JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{description.capitalize()} must be a JSON object.")
+    return parsed
+
+
+def _format_number(value) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _print_evaluation_run(run) -> None:
+    model = run.model or ""
+    print(
+        f"{run.id}\t{run.prompt_id}\t{run.version}\t{run.suite}\t{model}\t"
+        f"{_format_timestamp(run.created_at)}\t"
+        f"{json.dumps(run.metrics, sort_keys=True, separators=(',', ':'))}"
+    )
+
+
+def _print_evaluation_comparison(comparison) -> None:
+    left_label = f"{comparison.from_ref['input_ref']}/v{comparison.from_ref['resolved_version']}"
+    right_label = f"{comparison.to_ref['input_ref']}/v{comparison.to_ref['resolved_version']}"
+    print(f"Evaluation comparison: {comparison.prompt_id}")
+    print(f"Suite: {comparison.suite}")
+    print(f"Model: {comparison.model or '(none)'}")
+    print()
+    print(f"{'Metric':<20}{left_label:<18}{right_label:<18}Delta")
+    for item in comparison.metrics:
+        delta = _format_number(item.delta)
+        if item.delta > 0:
+            delta = "+" + delta
+        print(
+            f"{item.metric:<20}{_format_number(item.baseline):<18}"
+            f"{_format_number(item.candidate):<18}{delta}"
+        )
+    if comparison.missing_from:
+        print(f"Missing from baseline: {', '.join(comparison.missing_from)}")
+    if comparison.missing_to:
+        print(f"Missing from candidate: {', '.join(comparison.missing_to)}")
+
+
 def _print_enzo_easter_egg() -> None:
     print("Thanks, UnclaEnzo.")
     print("Your early feedback helped shape PromptLedger:")
@@ -229,6 +288,47 @@ def main(argv: list[str] | None = None) -> int:
     marker_show.add_argument("--id", dest="prompt_id", required=True)
     marker_show.add_argument("--version", type=int, required=True)
 
+    eval_parser = subparsers.add_parser("eval", help="Record, compare, and gate evaluations.")
+    eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True)
+    eval_record = eval_sub.add_parser("record", help="Record an external evaluation run.")
+    eval_record.add_argument("--id", dest="prompt_id", required=True)
+    eval_record.add_argument("--ref", required=True)
+    eval_record.add_argument("--suite")
+    eval_record.add_argument("--model")
+    eval_record.add_argument("--dataset-hash")
+    eval_record_input = eval_record.add_mutually_exclusive_group(required=True)
+    eval_record_input.add_argument("--metrics")
+    eval_record_input.add_argument("--file", type=Path)
+    eval_record.add_argument("--metadata")
+
+    eval_list = eval_sub.add_parser("list", help="List evaluation runs.")
+    eval_list.add_argument("--id", dest="prompt_id")
+    eval_list.add_argument("--ref")
+    eval_list.add_argument("--suite")
+    eval_list.add_argument("--model")
+    eval_list.add_argument("--limit", type=int, default=200)
+
+    eval_show = eval_sub.add_parser("show", help="Show one evaluation run.")
+    eval_show.add_argument("--run", type=int, required=True, dest="run_id")
+
+    eval_compare = eval_sub.add_parser("compare", help="Compare latest compatible runs.")
+    eval_compare.add_argument("--id", dest="prompt_id", required=True)
+    eval_compare.add_argument("--from", dest="from_ref", required=True)
+    eval_compare.add_argument("--to", dest="to_ref", required=True)
+    eval_compare.add_argument("--suite")
+    eval_compare.add_argument("--model")
+
+    eval_gate = eval_sub.add_parser("gate", help="Apply a regression gate policy.")
+    eval_gate.add_argument("--id", dest="prompt_id", required=True)
+    eval_gate.add_argument("--from", dest="from_ref", required=True)
+    eval_gate.add_argument("--to", dest="to_ref", required=True)
+    eval_gate.add_argument("--policy", type=Path, required=True)
+
+    eval_export = eval_sub.add_parser("export", help="Export evaluation runs as JSONL.")
+    eval_export.add_argument("--id", dest="prompt_id")
+    eval_export.add_argument("--format", choices=["jsonl"], required=True)
+    eval_export.add_argument("--out", type=Path, required=True)
+
     stable_parser = subparsers.add_parser("stable", help="Mark a version as stable.")
     stable_parser.add_argument("--id", dest="prompt_id", required=True)
     stable_parser.add_argument("--version", type=int)
@@ -237,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     milestone_parser.add_argument("--id", dest="prompt_id", required=True)
     milestone_parser.add_argument("--version", type=int)
 
-    dashboard_parser = subparsers.add_parser("dashboard", help="Launch the local read-only dashboard.")
+    dashboard_parser = subparsers.add_parser("dashboard", help="Launch the local review dashboard.")
     dashboard_parser.add_argument("--host", default="127.0.0.1")
     dashboard_parser.add_argument("--port", type=int, default=8765)
     dashboard_parser.add_argument(
@@ -506,6 +606,92 @@ def main(argv: list[str] | None = None) -> int:
                     print(", ".join(markers))
             else:
                 return _error("Unknown marker command.", 2)
+        elif args.command == "eval":
+            if args.eval_command == "record":
+                try:
+                    if args.file:
+                        payload = _read_json_object(args.file, "evaluation payload")
+                        if args.metadata is not None:
+                            raise ValueError("--metadata cannot be combined with --file.")
+                        suite = args.suite if args.suite is not None else payload.get("suite")
+                        model = args.model if args.model is not None else payload.get("model")
+                        dataset_hash = (
+                            args.dataset_hash
+                            if args.dataset_hash is not None
+                            else payload.get("dataset_hash")
+                        )
+                        metrics = payload.get("metrics")
+                        metadata = payload.get("metadata")
+                    else:
+                        suite = args.suite
+                        model = args.model
+                        dataset_hash = args.dataset_hash
+                        metrics = _parse_json_object(args.metrics, "metrics")
+                        metadata = _parse_json_object(args.metadata, "metadata")
+                    if not suite:
+                        raise ValueError("Evaluation suite is required (use --suite or include it in --file).")
+                    run = ledger.record_evaluation(
+                        args.prompt_id, args.ref, suite, metrics, model=model,
+                        dataset_hash=dataset_hash, metadata=metadata,
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    return _error(str(exc), 2)
+                except Exception as exc:
+                    return _error(f"Failed to record evaluation: {exc}", 1)
+                print(f"Recorded evaluation run {run.id} for {run.prompt_id}@{run.version}")
+            elif args.eval_command == "list":
+                try:
+                    runs = ledger.list_evaluations(
+                        prompt_id=args.prompt_id, ref=args.ref, suite=args.suite,
+                        model=args.model, limit=args.limit,
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    return _error(str(exc), 2)
+                if not runs:
+                    print("0 results")
+                else:
+                    for run in runs:
+                        _print_evaluation_run(run)
+            elif args.eval_command == "show":
+                try:
+                    run = ledger.get_evaluation(args.run_id)
+                except (ValueError, RuntimeError) as exc:
+                    return _error(str(exc), 2)
+                if run is None:
+                    return _error("Evaluation run not found.", 2)
+                print(json.dumps(run.to_dict(), indent=2, sort_keys=True))
+            elif args.eval_command == "compare":
+                try:
+                    comparison = ledger.compare_evaluations(
+                        args.prompt_id, args.from_ref, args.to_ref,
+                        suite=args.suite, model=args.model,
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    return _error(str(exc), 2)
+                _print_evaluation_comparison(comparison)
+            elif args.eval_command == "gate":
+                try:
+                    policy = _read_json_object(args.policy, "gate policy")
+                    result = ledger.evaluate_gate(
+                        args.prompt_id, args.from_ref, args.to_ref, policy
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    return _error(str(exc), 2)
+                for item in result.metrics:
+                    status = "PASS" if item.passed else "FAIL"
+                    print(f"{status} {item.metric}: {item.message}")
+                print()
+                print("Gate passed." if result.passed else "Gate failed.")
+                if not result.passed:
+                    return 3
+            elif args.eval_command == "export":
+                try:
+                    path = ledger.export_evaluations(args.out, prompt_id=args.prompt_id)
+                except (ValueError, RuntimeError) as exc:
+                    return _error(str(exc), 2)
+                except Exception as exc:
+                    return _error(f"Failed to export evaluations: {exc}", 1)
+                print(f"Exported to {path}")
         elif args.command in {"stable", "milestone"}:
             marker_name = args.command
             try:

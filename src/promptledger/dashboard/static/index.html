@@ -31,7 +31,7 @@
         </div>
 
         <button id="reset-layout-side" class="ghost-button" type="button">Reset layout</button>
-        <p class="sidebar-note">Prompt history is read-only here. Card layout is saved in this browser.</p>
+        <p class="sidebar-note">Prompt content is read-only here. Local markers can be updated; card layout stays in this browser.</p>
       </aside>
 
       <main class="content">
@@ -109,6 +109,16 @@
           </section>
         </div>
 
+        <section class="panel evaluation-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Evaluation runs</h2>
+              <p id="evaluation-subtitle">External benchmark results for this version</p>
+            </div>
+          </div>
+          <div id="evaluation-history" class="evaluation-history"></div>
+        </section>
+
         <section class="panel compare-panel">
           <div class="panel-head">
             <div>
@@ -136,6 +146,7 @@
               <div id="compare-right-text" class="diff-block"></div>
             </div>
           </div>
+          <div id="evaluation-comparison" class="evaluation-comparison"></div>
         </section>
       </div>
     </div>

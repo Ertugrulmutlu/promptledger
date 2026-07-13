@@ -1,4 +1,4 @@
-"""Local read-only dashboard for PromptLedger."""
+"""Local review dashboard for PromptLedger."""
 
 from .server import launch_dashboard
 

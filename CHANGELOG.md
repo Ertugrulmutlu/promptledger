@@ -4,6 +4,25 @@ All notable changes to PromptLedger are documented in this file.
 
 This project follows Keep a Changelog and Semantic Versioning.
 
+## [0.7.0] - 2026-07-13
+
+### Added
+- SQLite-backed evaluation runs attached to concrete prompt versions, with repeated runs and deterministic JSON serialization
+- Python APIs for recording, listing, retrieving, comparing, gating, and exporting evaluation data
+- `promptledger eval record`, `list`, `show`, `compare`, `gate`, and `export` commands
+- JSON regression policies with higher/lower directions and absolute/percentage thresholds
+- Read-only dashboard evaluation endpoints, version run history, and compatible metric deltas
+- Dashboard evaluation status that distinguishes `EVALUATED` from `NO EVAL DATA` without inventing gate conclusions
+
+### Changed
+- SQLite schema version 6 adds the non-destructive `evaluation_runs` table and supporting indexes
+- Dashboard prompt comparison now uses server-generated `difflib.SequenceMatcher` opcodes
+- Dashboard documentation now accurately distinguishes read-only prompt content from writable local marker metadata
+
+### Fixed
+- Inserted or removed prompt lines no longer cause every subsequent dashboard line to appear changed
+- Dashboard comparison normalizes CRLF and LF before computing line opcodes
+
 ## [0.6.0] - 2026-05-04
 
 ### Added
@@ -32,6 +51,25 @@ This project follows Keep a Changelog and Semantic Versioning.
 - Dashboard marker filter results refresh after marker changes
 - Dashboard handles empty prompt/search states intentionally
 - Version timeline is scrollable for prompts with many versions
+
+## [0.4.0] - 2026-04-16
+
+### Added
+- `promptledger add --quick` for reusing safe metadata from the latest prompt version
+- Version markers with `stable` and `milestone` CLI commands and SQLite storage
+- Prompt organization metadata through free-form `collection` and built-in `role` fields
+- Collection and role filters across list, search, and the legacy UI
+
+### Changed
+- SQLite schema migrations add marker storage plus collection and role columns without replacing existing data
+- Prompt list, show, review, and export surfaces include the new organization metadata
+
+## [0.3.0] - 2026-03-28
+
+### Added
+- Local prompt review workflow with resolved label/version references
+- Conservative semantic summaries, metadata changes, warnings, and review notes
+- Deterministic Markdown review export
 
 ## [0.2.0] - 2026-01-13
 

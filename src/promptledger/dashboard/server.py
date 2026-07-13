@@ -21,7 +21,7 @@ def create_handler(ledger: PromptLedger | None = None):
     active_ledger = ledger or PromptLedger()
 
     class DashboardHandler(BaseHTTPRequestHandler):
-        server_version = "PromptLedgerDashboard/0.6"
+        server_version = "PromptLedgerDashboard/0.7"
 
         def log_message(self, format: str, *args) -> None:  # noqa: A002
             return
@@ -68,6 +68,23 @@ def create_handler(ledger: PromptLedger | None = None):
             if path == "/api/stats":
                 self._send_json(api.stats(active_ledger))
                 return
+            if path == "/api/evaluations":
+                limit = _positive_int(_first(query, "limit", "200"), "Limit")
+                self._send_json(
+                    api.list_evaluations(
+                        active_ledger,
+                        prompt_id=_first(query, "id"),
+                        ref=_first(query, "ref"),
+                        suite=_first(query, "suite"),
+                        model=_first(query, "model"),
+                        limit=limit,
+                    )
+                )
+                return
+            if len(parts) == 3 and parts[:2] == ["api", "evaluations"]:
+                run_id = _positive_int(parts[2], "Evaluation run ID")
+                self._send_json_or_404(api.get_evaluation(active_ledger, run_id))
+                return
             if len(parts) >= 3 and parts[0] == "api" and parts[1] == "prompts":
                 prompt_id = parts[2]
                 if len(parts) == 3:
@@ -84,6 +101,44 @@ def create_handler(ledger: PromptLedger | None = None):
                         self._send_json({"error": "Version must be an integer."}, HTTPStatus.BAD_REQUEST)
                         return
                     self._send_json_or_404(api.get_version(active_ledger, prompt_id, version))
+                    return
+                if len(parts) == 6 and parts[3] == "versions" and parts[5] == "evaluations":
+                    version = _positive_int(parts[4], "Version")
+                    if active_ledger.get(prompt_id, version) is None:
+                        self._send_json({"error": "Prompt version not found."}, HTTPStatus.NOT_FOUND)
+                        return
+                    self._send_json(api.list_evaluations(
+                        active_ledger, prompt_id=prompt_id, ref=version,
+                        suite=_first(query, "suite"), model=_first(query, "model"),
+                        limit=_positive_int(_first(query, "limit", "200"), "Limit"),
+                    ))
+                    return
+                if len(parts) == 4 and parts[3] == "evaluation-compare":
+                    from_ref = _required_query(query, "from")
+                    to_ref = _required_query(query, "to")
+                    self._send_json(api.compare_evaluations(
+                        active_ledger, prompt_id, from_ref, to_ref,
+                        suite=_first(query, "suite"), model=_first(query, "model"),
+                    ))
+                    return
+                if len(parts) == 4 and parts[3] == "evaluation-gate":
+                    from_ref = _required_query(query, "from")
+                    to_ref = _required_query(query, "to")
+                    raw_policy = _required_query(query, "policy")
+                    try:
+                        policy = json.loads(raw_policy)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(f"Invalid gate policy JSON: {exc}") from exc
+                    self._send_json(active_ledger.evaluate_gate(
+                        prompt_id, from_ref, to_ref, policy
+                    ).to_dict())
+                    return
+                if len(parts) == 4 and parts[3] == "compare":
+                    self._send_json(api.compare_versions(
+                        active_ledger, prompt_id,
+                        _required_query(query, "from"),
+                        _required_query(query, "to"),
+                    ))
                     return
             self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
 
@@ -163,6 +218,23 @@ def _first(query: dict[str, list[str]], name: str, default: str | None = None) -
         return default
     value = values[0].strip()
     return value if value else default
+
+
+def _required_query(query: dict[str, list[str]], name: str) -> str:
+    value = _first(query, name)
+    if value is None:
+        raise ValueError(f"Query parameter '{name}' is required.")
+    return value
+
+
+def _positive_int(value: str | None, name: str) -> int:
+    try:
+        parsed = int(value or "")
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer.") from exc
+    if parsed < 1:
+        raise ValueError(f"{name} must be a positive integer.")
+    return parsed
 
 
 def launch_dashboard(

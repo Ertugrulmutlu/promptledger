@@ -23,13 +23,7 @@ pip install --upgrade promptledger
 
 Please do not report security vulnerabilities through a public GitHub issue, discussion, pull request, or social media post.
 
-Report vulnerabilities privately by contacting:
-
-```text
-ertugrulmutlu004@gmail.com
-```
-
-Replace `ertugrulmutlu004@gmail.com` with an email address you actively monitor before publishing this file.
+Report vulnerabilities privately by issiue.
 
 When reporting a vulnerability, include as much of the following information as possible:
 
